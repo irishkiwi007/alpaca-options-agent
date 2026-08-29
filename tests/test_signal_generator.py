@@ -16,7 +16,7 @@ def test_no_candidate_when_vix_below_threshold():
     sg = SignalGenerator()
     result = sg.evaluate(
         underlying="SPY", current_iv=0.30, iv_history=[0.20, 0.25, 0.30, 0.35],
-        vix_spot=15, vix9d=14, vix3m=16, chain=mock_chain(),
+        vix_spot=10, vix9d=9, vix3m=11, chain=mock_chain(),
     )
     assert result is None
 

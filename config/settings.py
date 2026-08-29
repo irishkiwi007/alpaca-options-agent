@@ -30,18 +30,33 @@ class ClaudeConfig:
 @dataclass(frozen=True)
 class StrategyConfig:
     # Underlyings the fast layer scans for 0DTE / short-dated credit spread setups.
-    universe: tuple = ("SPY",)
+    # SPY + QQQ: both among the most liquid 0DTE options that exist, and both
+    # have VIX-family vol signals that are actually meaningful for them
+    # (VIX for SPY/SPX, VXN conceptually for QQQ/NDX — though this repo uses
+    # VIX as the shared regime signal for both given data availability).
+    universe: tuple = ("SPY", "QQQ")
 
-    # VIX regime gates (mirrors vrp_condor_bot logic: only sell premium in elevated-vol regimes)
-    vix_entry_threshold: float = 20.0
+    # VIX regime gates. NOTE: as of this writing (Aug 2026) VIX has been
+    # sitting near 2026 lows (~14-15) for weeks — a threshold of 20, borrowed
+    # from a slower positional strategy, would leave this agent idle for the
+    # entire hackathon window. Lowered to reflect current reality; IV rank
+    # (relative to the underlying's own recent range) is the primary vol-
+    # timing signal, with this as a much looser sanity floor rather than the
+    # main gate. This value is also in the rules-review agent's adjustable
+    # whitelist — see config/dynamic_overrides.py — so it can be tuned
+    # further based on observed conditions rather than only by hand.
+    vix_entry_threshold: float = 12.0
     vix_backwardation_block: bool = True  # skip new entries if term structure inverted
 
-    # IV rank filter — only consider entries when IV rank (0-100) exceeds this
-    min_iv_rank: float = 40.0
+    # IV rank filter — only consider entries when IV rank (0-100) exceeds this.
+    # Lowered from an initial 40 for the same reason as vix_entry_threshold
+    # above: calibrated against current low-vol conditions rather than a
+    # generically "safe" level. Also in the adjustable whitelist.
+    min_iv_rank: float = 20.0
 
     # Target short-leg delta for credit spreads (absolute value)
     target_short_delta: float = 0.16
-    delta_tolerance: float = 0.05
+    delta_tolerance: float = 0.08  # widened from 0.05 to catch more real strikes
 
     # Spread width in strikes (dollars) for vertical spreads
     spread_width: float = 5.0
