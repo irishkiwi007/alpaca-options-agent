@@ -15,6 +15,22 @@ from fast_layer.signal_generator import SpreadCandidate
 from agent_layer.prompts import SYSTEM_PROMPT, build_user_prompt
 
 
+def _strip_code_fences(text: str) -> str:
+    """
+    Claude sometimes wraps JSON output in markdown code fences even when
+    instructed not to. Strips a leading/trailing ```json or ``` fence if
+    present, otherwise returns the text unchanged.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        lines = lines[1:]  # drop opening fence (```json or ```)
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines)
+    return stripped
+
+
 @dataclass
 class AgentDecision:
     decision: str  # "approve" | "resize" | "reject"
@@ -58,7 +74,7 @@ class TradeReviewAgent:
 
         text = "".join(block.text for block in response.content if hasattr(block, "text"))
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(_strip_code_fences(text))
             return AgentDecision(
                 decision=parsed.get("decision", "reject"),
                 contracts=int(parsed.get("contracts", 0)),

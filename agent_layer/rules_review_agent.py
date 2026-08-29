@@ -23,6 +23,7 @@ from config import CONFIG
 from config.dynamic_overrides import ADJUSTABLE_BOUNDS, apply_override, load_overrides
 from execution.trade_logger import read_events, log_event
 from agent_layer.rules_review_prompts import RULES_REVIEW_SYSTEM_PROMPT, build_review_prompt
+from agent_layer.claude_agent import _strip_code_fences
 
 
 def _summarize_recent_activity(limit: int = 200) -> dict:
@@ -87,7 +88,7 @@ class RulesReviewAgent:
         text = "".join(block.text for block in response.content if hasattr(block, "text"))
 
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(_strip_code_fences(text))
         except (json.JSONDecodeError, TypeError):
             record = {
                 "change_recommended": False,
