@@ -31,6 +31,14 @@ class TradeReviewAgent:
         self._calls_this_session = 0
 
     def review(self, candidate: SpreadCandidate, market_context: dict) -> AgentDecision:
+        if not self.config.claude.api_key:
+            return AgentDecision(
+                decision="reject",
+                contracts=0,
+                confidence=0.0,
+                reasoning="ANTHROPIC_API_KEY not configured; failing closed rather than trading without review.",
+            )
+
         if self._calls_this_session >= self.config.strategy.agent_max_calls_per_session:
             return AgentDecision(
                 decision="reject",
