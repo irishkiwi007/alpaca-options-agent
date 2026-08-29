@@ -23,18 +23,29 @@ import time as time_module
 from datetime import date, datetime, timezone
 
 from config import CONFIG
+from config.dynamic_overrides import effective_strategy_config
 from fast_layer.market_data import MarketData
 from fast_layer.signal_generator import SignalGenerator
 from agent_layer.claude_agent import TradeReviewAgent
+from agent_layer.rules_review_agent import RulesReviewAgent
 from risk.portfolio_governor import PortfolioGovernor
 from risk.stop_loss import check_exit, PositionState
 from execution.alpaca_client import AlpacaExecutionClient
 from execution.trade_logger import log_event
 
 
-async def run_once(dry_run: bool = True):
+async def run_once(dry_run: bool = True, run_rules_review: bool = True):
     market = MarketData()
-    signals = SignalGenerator()
+    effective_config = CONFIG
+    if run_rules_review:
+        reviewer = RulesReviewAgent()
+        review_result = reviewer.review()
+        log_event("rules_review_summary", review_result)
+        effective_strategy = effective_strategy_config(CONFIG.strategy)
+        from dataclasses import replace as _replace
+        effective_config = _replace(CONFIG, strategy=effective_strategy)
+
+    signals = SignalGenerator(config=effective_config)
     agent = TradeReviewAgent()
     governor = PortfolioGovernor()
     execution = AlpacaExecutionClient()  # always constructed; only invoked to place orders when not dry_run
@@ -53,7 +64,7 @@ async def run_once(dry_run: bool = True):
     daily_pnl_pct = 0.0  # derived from account_snapshot's equity vs session-start equity in a longer-running loop
     current_net_delta = 0.0  # summed from current_positions' greeks once positions exist
 
-    for underlying in CONFIG.strategy.universe:
+    for underlying in effective_config.strategy.universe:
         try:
             vix = await market.vix_snapshot()
             chain = await market.option_chain(underlying, expiration=date.today().isoformat())
@@ -155,17 +166,19 @@ def main():
     parser.add_argument("--dry-run", action="store_true", default=True, help="Log decisions, place no orders (default)")
     parser.add_argument("--live-paper", action="store_true", help="Place real orders against the paper account")
     parser.add_argument("--once", action="store_true", help="Single pass instead of a continuous loop")
+    parser.add_argument("--skip-rules-review", action="store_true", help="Skip the rules-review agent pass (use base config as-is)")
     args = parser.parse_args()
 
     dry_run = not args.live_paper
+    run_rules_review = not args.skip_rules_review
 
     if args.once:
-        asyncio.run(run_once(dry_run=dry_run))
+        asyncio.run(run_once(dry_run=dry_run, run_rules_review=run_rules_review))
         return
 
     interval = CONFIG.strategy.fast_layer_interval_minutes * 60
     while True:
-        asyncio.run(run_once(dry_run=dry_run))
+        asyncio.run(run_once(dry_run=dry_run, run_rules_review=run_rules_review))
         time_module.sleep(interval)
 
 
