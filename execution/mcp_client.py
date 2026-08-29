@@ -1,0 +1,89 @@
+"""
+Wraps Alpaca's official MCP server (alpacahq/alpaca-mcp-server) as a
+stdio subprocess and exposes its tools through a small async client.
+
+This is what actually satisfies the hackathon's requirement to use
+Alpaca's Trading API "via its MCP server or CLI" — execution in this
+repo goes through the same MCP tool surface Claude Desktop/Cursor use,
+not a direct alpaca-py call. See execution/alpaca_client.py for the
+higher-level wrapper built on top of this.
+"""
+import json
+from contextlib import AsyncExitStack
+from typing import Any, Optional
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+from config import CONFIG
+
+
+class AlpacaMCPToolError(Exception):
+    """Raised when an Alpaca MCP tool call fails, wrapping the server's error text."""
+    pass
+
+
+class AlpacaMCPClient:
+    """
+    Async context manager. Usage:
+
+        async with AlpacaMCPClient() as mcp:
+            account = await mcp.call_tool("get_account_info", {})
+    """
+
+    def __init__(self, config=CONFIG):
+        self.config = config
+        self._session: Optional[ClientSession] = None
+        self._stack: Optional[AsyncExitStack] = None
+
+    async def __aenter__(self):
+        self._stack = AsyncExitStack()
+        server_params = StdioServerParameters(
+            command="alpaca-mcp-server",
+            args=["--transport", "stdio"],
+            env={
+                "ALPACA_API_KEY": self.config.alpaca.api_key,
+                "ALPACA_SECRET_KEY": self.config.alpaca.secret_key,
+                "ALPACA_PAPER_TRADE": "True",
+            },
+        )
+        read, write = await self._stack.enter_async_context(stdio_client(server_params))
+        self._session = await self._stack.enter_async_context(ClientSession(read, write))
+        await self._session.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._stack:
+            await self._stack.aclose()
+
+    async def call_tool(self, name: str, arguments: dict) -> Any:
+        """
+        Raises AlpacaMCPToolError on failure rather than returning an
+        error string as if it were data. The underlying server (FastMCP)
+        catches its own internal exceptions and returns them as text
+        content instead of propagating a protocol-level error, so this
+        client normalizes that back into a real exception — callers
+        throughout fast_layer/execution rely on try/except, not on
+        duck-typing an error string.
+        """
+        assert self._session is not None, "AlpacaMCPClient used outside 'async with' block"
+        result = await self._session.call_tool(name, arguments)
+
+        if getattr(result, "isError", False):
+            text = result.content[0].text if result.content and hasattr(result.content[0], "text") else str(result.content)
+            raise AlpacaMCPToolError(f"Tool '{name}' returned an error: {text}")
+
+        if result.content and hasattr(result.content[0], "text"):
+            text = result.content[0].text
+            if isinstance(text, str) and text.startswith("Error calling tool"):
+                raise AlpacaMCPToolError(text)
+            try:
+                return json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return text
+        return result.content
+
+    async def list_tools(self) -> list:
+        assert self._session is not None
+        tools = await self._session.list_tools()
+        return [t.name for t in tools.tools]
