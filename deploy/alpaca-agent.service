@@ -1,0 +1,19 @@
+[Unit]
+Description=Alpaca Autonomous Options Trading Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/alpaca-options-agent
+EnvironmentFile=/home/ubuntu/alpaca-options-agent/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/alpaca-options-agent/main_autonomous.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alpaca-agent
+
+[Install]
+WantedBy=multi-user.target
