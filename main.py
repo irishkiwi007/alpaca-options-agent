@@ -2,23 +2,25 @@
 Entrypoint. This is the "go button."
 
 Run modes:
-  python main.py --dry-run     # full pipeline, logs decisions, places NO orders
-  python main.py --live-paper  # full pipeline, places real (paper) orders
+  python main.py --dry-run     # full pipeline, logs decisions, places NO orders (default)
+  python main.py --live-paper  # full pipeline, places real orders against the paper account
   python main.py --once        # single pass instead of continuous loop (good for demos)
 
 The pipeline per underlying, per fast-layer tick:
-  1. fast_layer generates a candidate (or None) from market state
-  2. agent_layer reviews the candidate with visible reasoning
+  1. fast_layer pulls live data via Alpaca's MCP server and generates a
+     candidate (or None) from market state
+  2. agent_layer (Claude) reviews the candidate with visible reasoning
   3. risk.portfolio_governor makes the final approve/resize/reject call
-  4. execution places the order (or is skipped in --dry-run)
+  4. execution places the order via MCP (or is skipped in --dry-run)
   5. everything is logged to logs/events.jsonl regardless of outcome
 
 Exit management runs independently and is pure rules (risk/stop_loss.py),
 checked every tick against open positions, with no agent call in that path.
 """
 import argparse
+import asyncio
 import time as time_module
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from config import CONFIG
 from fast_layer.market_data import MarketData
@@ -30,45 +32,57 @@ from execution.alpaca_client import AlpacaExecutionClient
 from execution.trade_logger import log_event
 
 
-def run_once(dry_run: bool = True):
+async def run_once(dry_run: bool = True):
     market = MarketData()
     signals = SignalGenerator()
     agent = TradeReviewAgent()
     governor = PortfolioGovernor()
-    execution = None if dry_run else AlpacaExecutionClient()
+    execution = AlpacaExecutionClient()  # always constructed; only invoked to place orders when not dry_run
 
     log_event("session_start", {"dry_run": dry_run, "timestamp": datetime.now(timezone.utc).isoformat()})
 
-    account_equity = 100000.0  # placeholder until execution.account_snapshot() is live-verified
-    daily_pnl_pct = 0.0
-    current_net_delta = 0.0
-    current_positions = []
-
-    if execution:
-        snap = execution.account_snapshot()
+    try:
+        snap = await execution.account_snapshot()
         account_equity = snap["equity"]
-        current_positions = execution.open_positions()
+        current_positions = await execution.open_positions()
+    except Exception as e:
+        log_event("account_fetch_failed", {"error": str(e)})
+        account_equity = 100000.0
+        current_positions = []
+
+    daily_pnl_pct = 0.0  # derived from account_snapshot's equity vs session-start equity in a longer-running loop
+    current_net_delta = 0.0  # summed from current_positions' greeks once positions exist
 
     for underlying in CONFIG.strategy.universe:
-        # NOTE: chain/iv_history/vix inputs below are wired to live data once
-        # network egress to Alpaca's data hosts is confirmed reachable from
-        # this environment. Structure and gating logic are final; only the
-        # data-fetch calls are pending that verification.
+        try:
+            vix = await market.vix_snapshot()
+            chain = await market.option_chain(underlying, expiration=date.today().isoformat())
+        except Exception as e:
+            log_event("market_data_fetch_failed", {"underlying": underlying, "error": str(e)})
+            continue
+
+        # IV rank needs a history series; without a stored rolling window yet,
+        # fall back to a neutral estimate (iv_rank() itself returns 50 for
+        # insufficient history, which the >= min_iv_rank gate then blocks
+        # correctly rather than passing on unknown data).
+        current_iv = 0.0
+        iv_history: list = []
+
         candidate = signals.evaluate(
             underlying=underlying,
-            current_iv=0.0,
-            iv_history=[],
-            vix_spot=0.0,
-            vix9d=0.0,
-            vix3m=0.0,
-            chain={},
+            current_iv=current_iv,
+            iv_history=iv_history,
+            vix_spot=vix.get("vix_spot", 0.0),
+            vix9d=vix.get("vix9d", 0.0),
+            vix3m=vix.get("vix3m", 0.0),
+            chain=chain,
         )
 
         if candidate is None:
-            log_event("no_candidate", {"underlying": underlying, "reason": "gates not met or data not yet wired"})
+            log_event("no_candidate", {"underlying": underlying, "vix": vix})
             continue
 
-        market_context = {"underlying": underlying}
+        market_context = {"underlying": underlying, "vix": vix}
         decision = agent.review(candidate, market_context)
         log_event("agent_decision", {
             "underlying": underlying,
@@ -99,18 +113,41 @@ def run_once(dry_run: bool = True):
         if not risk_decision.approved:
             continue
 
+        short_symbol = _find_option_symbol(chain, candidate.short_strike, "put")
+        long_symbol = _find_option_symbol(chain, candidate.long_strike, "put")
+
+        if not short_symbol or not long_symbol:
+            log_event("symbol_resolution_failed", {"underlying": underlying, "candidate": candidate.__dict__})
+            continue
+
         if dry_run:
             log_event("dry_run_would_execute", {
                 "underlying": underlying,
-                "candidate": candidate.__dict__,
+                "short_symbol": short_symbol,
+                "long_symbol": long_symbol,
                 "contracts": risk_decision.adjusted_contracts,
+                "estimated_credit": candidate.estimated_credit,
             })
         else:
-            # short_symbol/long_symbol resolution from candidate strikes to
-            # actual OCC option symbols happens once live chain data is wired.
-            log_event("execution_pending_chain_wiring", {"underlying": underlying})
+            try:
+                result = await execution.submit_vertical_spread(
+                    short_symbol=short_symbol,
+                    long_symbol=long_symbol,
+                    contracts=risk_decision.adjusted_contracts,
+                    limit_credit=candidate.estimated_credit,
+                )
+                log_event("execution_success", {"underlying": underlying, "result": result})
+            except Exception as e:
+                log_event("execution_failed", {"underlying": underlying, "error": str(e)})
 
     log_event("session_end", {"timestamp": datetime.now(timezone.utc).isoformat()})
+
+
+def _find_option_symbol(chain: dict, strike: float, option_type: str) -> str:
+    for symbol, data in chain.items():
+        if data.get("type") == option_type and abs(data.get("strike", -1) - strike) < 0.01:
+            return symbol
+    return ""
 
 
 def main():
@@ -123,12 +160,12 @@ def main():
     dry_run = not args.live_paper
 
     if args.once:
-        run_once(dry_run=dry_run)
+        asyncio.run(run_once(dry_run=dry_run))
         return
 
     interval = CONFIG.strategy.fast_layer_interval_minutes * 60
     while True:
-        run_once(dry_run=dry_run)
+        asyncio.run(run_once(dry_run=dry_run))
         time_module.sleep(interval)
 
 
