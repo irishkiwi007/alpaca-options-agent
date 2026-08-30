@@ -19,7 +19,7 @@ import os
 import time
 
 from config import CONFIG
-from execution.mcp_client import AlpacaMCPClient
+from execution.mcp_client import AlpacaMCPClient, unwrap_data
 from execution.trade_logger import log_event
 from risk.drawdown_monitor import check_drawdown
 from agent_layer.autonomous_agent import AutonomousTradingAgent
@@ -40,7 +40,8 @@ async def _flatten_all(config, reason: str):
 async def _get_current_equity(config) -> float:
     async with AlpacaMCPClient(config) as mcp:
         account = await mcp.call_tool("get_account_info", {})
-    return float(account.get("equity", 0))
+    data = unwrap_data(account)
+    return float(data.get("equity", 0))
 
 
 async def main_loop():

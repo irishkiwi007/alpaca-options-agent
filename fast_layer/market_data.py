@@ -12,7 +12,7 @@ though it shares the same underlying MCP client class.
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from execution.mcp_client import AlpacaMCPClient
+from execution.mcp_client import AlpacaMCPClient, unwrap_data
 from config import CONFIG
 
 
@@ -28,13 +28,15 @@ class MarketData:
                 "timeframe": timeframe,
                 "start": start,
             })
-        bars = result.get("bars", {}).get(symbol, []) if isinstance(result, dict) else []
+        data = unwrap_data(result)
+        bars = data.get("bars", {}).get(symbol, []) if isinstance(data, dict) else []
         return bars
 
     async def latest_quote(self, symbol: str) -> dict:
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_stock_latest_quote", {"symbols": symbol})
-        return result.get("quotes", {}).get(symbol, {}) if isinstance(result, dict) else {}
+        data = unwrap_data(result)
+        return data.get("quotes", {}).get(symbol, {}) if isinstance(data, dict) else {}
 
     async def option_chain(self, underlying: str, expiration: Optional[str] = None) -> dict:
         """
@@ -50,7 +52,8 @@ class MarketData:
             result = await mcp.call_tool("get_option_chain", params)
 
         chain = {}
-        raw_snapshots = result.get("snapshots", {}) if isinstance(result, dict) else {}
+        data = unwrap_data(result)
+        raw_snapshots = data.get("snapshots", {}) if isinstance(data, dict) else {}
         for symbol, snap in raw_snapshots.items():
             greeks = snap.get("greeksTrade", {}) or snap.get("greeks", {}) or {}
             quote = snap.get("latestQuote", {}) or {}
@@ -70,7 +73,8 @@ class MarketData:
     async def option_quote(self, option_symbol: str) -> dict:
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_option_latest_quote", {"symbols": option_symbol})
-        return result.get("quotes", {}).get(option_symbol, {}) if isinstance(result, dict) else {}
+        data = unwrap_data(result)
+        return data.get("quotes", {}).get(option_symbol, {}) if isinstance(data, dict) else {}
 
     async def vix_snapshot(self) -> dict:
         """
@@ -82,7 +86,8 @@ class MarketData:
         symbols = "VIX,VIX9D,VIX3M"
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_stock_latest_quote", {"symbols": symbols})
-        quotes = result.get("quotes", {}) if isinstance(result, dict) else {}
+        data = unwrap_data(result)
+        quotes = data.get("quotes", {}) if isinstance(data, dict) else {}
         return {
             "vix_spot": quotes.get("VIX", {}).get("bidPrice", 0.0),
             "vix9d": quotes.get("VIX9D", {}).get("bidPrice", 0.0),

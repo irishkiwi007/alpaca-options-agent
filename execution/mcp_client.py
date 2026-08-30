@@ -49,6 +49,22 @@ def _resolve_server_command() -> str:
     )
 
 
+def unwrap_data(result: Any) -> Any:
+    """
+    The Alpaca MCP server wraps every response as
+    {"_alpaca_mcp_security": {...}, "data": {...actual fields...}}.
+    Callers that read specific fields (equity, positions, etc.) need the
+    unwrapped payload, not the envelope. This was a real bug found via
+    live testing — the drawdown monitor was silently reading equity as
+    0.0 because callers were reading top-level fields that only exist
+    under "data". Safe to call on non-enveloped results too (returns
+    them unchanged).
+    """
+    if isinstance(result, dict) and "data" in result and "_alpaca_mcp_security" in result:
+        return result["data"]
+    return result
+
+
 class AlpacaMCPToolError(Exception):
     """Raised when an Alpaca MCP tool call fails, wrapping the server's error text."""
     pass

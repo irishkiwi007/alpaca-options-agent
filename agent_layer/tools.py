@@ -12,7 +12,7 @@ carries no backstop because it can't place risk.
 import json
 from datetime import date
 
-from execution.mcp_client import AlpacaMCPClient
+from execution.mcp_client import AlpacaMCPClient, unwrap_data
 from risk.hard_backstops import check_defined_risk, check_position_sizing
 from execution.trade_logger import log_event
 from config import CONFIG
@@ -188,7 +188,7 @@ class ToolDispatcher:
         # --- Hard backstop 2: per-trade sizing cap ---
         async with AlpacaMCPClient(self.config) as mcp:
             account = await mcp.call_tool("get_account_info", {})
-        equity = float(account.get("equity", 0))
+        equity = float(unwrap_data(account).get("equity", 0))
 
         sizing_check = check_position_sizing(max_loss_per_contract, contracts, equity)
         if not sizing_check.approved:

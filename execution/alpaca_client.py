@@ -10,7 +10,7 @@ place an order — the async context manager here is only entered by
 code that intends to act.
 """
 from config import CONFIG
-from execution.mcp_client import AlpacaMCPClient
+from execution.mcp_client import AlpacaMCPClient, unwrap_data
 from execution.trade_logger import log_event
 
 
@@ -29,18 +29,25 @@ class AlpacaExecutionClient:
 
     async def account_snapshot(self) -> dict:
         async with AlpacaMCPClient(self.config) as mcp:
-            acct = await mcp.call_tool("get_account_info", {})
+            raw = await mcp.call_tool("get_account_info", {})
+            acct = unwrap_data(raw)
             return {
                 "equity": float(acct.get("equity", 0)),
                 "buying_power": float(acct.get("buying_power", 0)),
                 "options_buying_power": float(acct.get("options_buying_power", 0) or 0),
-                "raw": acct,
+                "raw": raw,
             }
 
     async def open_positions(self) -> list:
         async with AlpacaMCPClient(self.config) as mcp:
-            positions = await mcp.call_tool("get_all_positions", {})
-            return positions if isinstance(positions, list) else []
+            raw = await mcp.call_tool("get_all_positions", {})
+            data = unwrap_data(raw)
+            # get_all_positions nests the list one level deeper as
+            # {"result": [...]}, not directly as a top-level list —
+            # verified against a live response, not assumed.
+            if isinstance(data, dict):
+                return data.get("result", [])
+            return data if isinstance(data, list) else []
 
     async def submit_vertical_spread(
         self,
