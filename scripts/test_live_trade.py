@@ -72,13 +72,26 @@ async def find_test_spread():
     if len(calls) < 2:
         raise RuntimeError(f"Not enough liquid call quotes found near {spy_price} to build a spread.")
 
-    calls.sort(key=lambda c: abs(c["strike"] - spy_price))
-    buy_leg = calls[0]  # nearest to current price
-    # find the next strike up from buy_leg for the short leg
-    higher_strikes = sorted([c for c in calls if c["strike"] > buy_leg["strike"]], key=lambda c: c["strike"])
-    if not higher_strikes:
-        raise RuntimeError("No higher strike available to form a spread above the nearest-the-money call.")
-    sell_leg = higher_strikes[0]
+    calls.sort(key=lambda c: c["strike"])
+
+    # Pick the adjacent pair (by strike) whose midpoint is closest to the
+    # current spot price — more robust than anchoring to a single
+    # "nearest to spot" strike first, which can fail if that specific
+    # strike happens to be the highest (or lowest) one with a live quote.
+    best_pair = None
+    best_distance = float("inf")
+    for i in range(len(calls) - 1):
+        lower, upper = calls[i], calls[i + 1]
+        midpoint = (lower["strike"] + upper["strike"]) / 2
+        distance = abs(midpoint - spy_price)
+        if distance < best_distance:
+            best_distance = distance
+            best_pair = (lower, upper)
+
+    if best_pair is None:
+        raise RuntimeError("Could not find any adjacent pair of liquid call strikes to form a spread.")
+
+    buy_leg, sell_leg = best_pair
 
     net_debit = round(buy_leg["ask"] - sell_leg["bid"], 2)
     spread_width = sell_leg["strike"] - buy_leg["strike"]
