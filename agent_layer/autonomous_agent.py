@@ -13,6 +13,7 @@ when, and how much, bounded only by the two hard backstops enforced
 inside agent_layer/tools.py itself.
 """
 import re
+import os
 import anthropic
 
 from config import CONFIG
@@ -22,6 +23,23 @@ from execution.trade_logger import log_event
 
 DEFAULT_NEXT_CHECK_MINUTES = 15
 MAX_TOOL_ROUNDS_PER_CYCLE = 25  # safety valve against a runaway tool-call loop within one cycle
+OPERATOR_NOTE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "OPERATOR_NOTE")
+
+
+def _consume_operator_note() -> str:
+    """
+    If a note has been left (see deploy/DEPLOY.md), read it, delete the
+    file so it's only injected once, and return its text. Lets the
+    operator correct a factual error or flag something without needing
+    to stop and restart the whole process — the note becomes part of
+    the very next cycle's opening message.
+    """
+    if not os.path.exists(OPERATOR_NOTE_PATH):
+        return ""
+    with open(OPERATOR_NOTE_PATH, "r") as f:
+        note = f.read().strip()
+    os.remove(OPERATOR_NOTE_PATH)
+    return note
 
 
 class AutonomousTradingAgent:
@@ -42,14 +60,20 @@ class AutonomousTradingAgent:
 
         log_event("autonomous_cycle_start", {})
 
-        messages = [{
-            "role": "user",
-            "content": (
-                "Begin this decision cycle. Check whatever account, position, and market information "
-                "you need, decide whether to act, and act if warranted within your limits. End with "
-                "your summary and the NEXT_CHECK_MINUTES line."
-            ),
-        }]
+        operator_note = _consume_operator_note()
+        opening_text = (
+            "Begin this decision cycle. Check whatever account, position, and market information "
+            "you need, decide whether to act, and act if warranted within your limits. End with "
+            "your summary and the NEXT_CHECK_MINUTES line."
+        )
+        if operator_note:
+            log_event("operator_note_injected", {"note": operator_note})
+            opening_text = (
+                f"OPERATOR NOTE (read this first, it may correct something you previously assumed): "
+                f"{operator_note}\n\n{opening_text}"
+            )
+
+        messages = [{"role": "user", "content": opening_text}]
 
         final_text = ""
         for round_num in range(MAX_TOOL_ROUNDS_PER_CYCLE):

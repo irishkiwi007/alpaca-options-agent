@@ -71,6 +71,16 @@ journalctl -u alpaca-agent -f          # live log tail
 tail -f logs/events.jsonl               # structured decision/trade log
 ```
 
+## Leaving it a note
+
+If you need to correct something it's assumed or flag information it should factor in — without stopping the process — write a note file:
+
+```bash
+echo "Your correction or note here." > ~/alpaca-options-agent/OPERATOR_NOTE
+```
+
+The next cycle reads it, treats it as the first thing to consider that cycle, and deletes the file so it's only injected once. No restart needed — it's picked up automatically whenever the next cycle begins.
+
 ## Stopping it
 
 **Hard stop (immediate, no flatten):**
