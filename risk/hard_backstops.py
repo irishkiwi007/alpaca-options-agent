@@ -51,6 +51,45 @@ def check_defined_risk(short_symbol: str, long_symbol: str, short_side: str, lon
     return BackstopResult(True, "Two-leg opposite-side spread confirmed; risk is defined.")
 
 
+def check_spread_economics(buy_symbol: str, sell_symbol: str, limit_price: float) -> BackstopResult:
+    """
+    Rejects any spread where the price paid (debit) or received (credit)
+    is not economically sane relative to the spread's own width — the
+    maximum amount the spread could possibly be worth. Found via live
+    testing: a $1-wide spread was priced at $3.63/contract debit, more
+    than 3x its maximum possible value — a guaranteed loss if it had
+    filled. Neither the defined-risk check nor the sizing check catches
+    this, since both only look at declared max_loss, not whether that
+    figure is itself sane.
+
+    Strikes are parsed directly from the OCC option symbols (last 8
+    digits / 1000), so this doesn't depend on the caller's own math
+    being correct — it's an independent check against the same source
+    of truth Alpaca itself uses to identify the contracts.
+    """
+    try:
+        buy_strike = int(buy_symbol[-8:]) / 1000.0
+        sell_strike = int(sell_symbol[-8:]) / 1000.0
+    except (ValueError, IndexError):
+        return BackstopResult(False, f"Could not parse strikes from option symbols '{buy_symbol}' / '{sell_symbol}' to validate spread economics.")
+
+    width = abs(sell_strike - buy_strike)
+    if width <= 0:
+        return BackstopResult(False, "Spread width is zero — legs resolve to the same strike, which is not a valid spread.")
+
+    price_magnitude = abs(limit_price)
+    if price_magnitude >= width:
+        direction = "debit" if limit_price > 0 else "credit"
+        return BackstopResult(
+            False,
+            f"Spread {direction} of ${price_magnitude:.2f}/share is not less than the ${width:.2f} spread width — "
+            f"this would guarantee a loss even in the best case (max possible spread value is ${width * 100:.2f}/contract, "
+            f"but ${price_magnitude * 100:.2f}/contract is being paid/received). Rejected as economically irrational.",
+        )
+
+    return BackstopResult(True, f"Spread economics sane: ${price_magnitude:.2f} price vs ${width:.2f} width.")
+
+
 def check_position_sizing(
     max_loss_per_contract: float,
     contracts: int,

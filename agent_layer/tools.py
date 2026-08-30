@@ -3,8 +3,8 @@ Defines the tools Claude can call during an autonomous decision cycle,
 and dispatches each tool call to the underlying Alpaca MCP client.
 
 The critical design point: place_spread_order — the only tool that can
-actually risk money — runs both hard backstops (risk/hard_backstops.py)
-BEFORE calling Alpaca. If either fails, the tool returns a clear
+actually risk money — runs three hard backstops (risk/hard_backstops.py)
+BEFORE calling Alpaca. If any fail, the tool returns a clear
 rejection to Claude instead of executing, and nothing is sent to
 Alpaca. Every other tool is read-only or account-management and
 carries no backstop because it can't place risk.
@@ -13,7 +13,7 @@ import json
 from datetime import date
 
 from execution.mcp_client import AlpacaMCPClient, unwrap_data
-from risk.hard_backstops import check_defined_risk, check_position_sizing
+from risk.hard_backstops import check_defined_risk, check_position_sizing, check_spread_economics
 from execution.trade_logger import log_event
 from config import CONFIG
 
@@ -67,8 +67,9 @@ TOOL_SCHEMAS = [
             "Place a two-leg options spread order. This is the ONLY way to open a new position — "
             "naked single-leg orders are not available as a tool, by design. Both legs are required, "
             "on opposite sides (one buy, one sell), which structurally caps the position's maximum loss. "
-            "The order will be rejected with an explanation if it fails either hard backstop: "
-            "not being a genuine defined-risk spread, or risking more than 15% of account equity."
+            "The order will be rejected with an explanation if it fails any hard backstop: "
+            "not being a genuine defined-risk spread, the price paid/received not being economically "
+            "sane relative to the spread's width, or risking more than 15% of account equity."
         ),
         "input_schema": {
             "type": "object",
@@ -185,7 +186,13 @@ class ToolDispatcher:
             log_event("backstop_rejected", {"backstop": "defined_risk", "reason": risk_check.reason, "input": tool_input})
             return json.dumps({"rejected": True, "backstop": "defined_risk", "reason": risk_check.reason})
 
-        # --- Hard backstop 2: per-trade sizing cap ---
+        # --- Hard backstop 2: spread economics sanity ---
+        economics_check = check_spread_economics(buy_symbol, sell_symbol, limit_price)
+        if not economics_check.approved:
+            log_event("backstop_rejected", {"backstop": "spread_economics", "reason": economics_check.reason, "input": tool_input})
+            return json.dumps({"rejected": True, "backstop": "spread_economics", "reason": economics_check.reason})
+
+        # --- Hard backstop 3: per-trade sizing cap ---
         async with AlpacaMCPClient(self.config) as mcp:
             account = await mcp.call_tool("get_account_info", {})
         equity = float(unwrap_data(account).get("equity", 0))
