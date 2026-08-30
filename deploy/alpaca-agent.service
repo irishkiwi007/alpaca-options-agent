@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/alpaca-options-agent
+Environment="PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=/home/ubuntu/alpaca-options-agent/.env
 ExecStart=/usr/bin/python3 /home/ubuntu/alpaca-options-agent/main_autonomous.py
 Restart=on-failure

@@ -9,6 +9,8 @@ not a direct alpaca-py call. See execution/alpaca_client.py for the
 higher-level wrapper built on top of this.
 """
 import json
+import shutil
+import os
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
@@ -16,6 +18,35 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from config import CONFIG
+
+
+def _resolve_server_command() -> str:
+    """
+    Locate the alpaca-mcp-server executable robustly. Interactive shells
+    typically have ~/.local/bin on PATH (where pip --user installs land),
+    but systemd services get a minimal default PATH that doesn't include
+    it — this caused a real deployment failure (FileNotFoundError) the
+    first time this ran as a systemd service despite working fine when
+    run manually. Checking common install locations directly, not just
+    relying on PATH, makes this robust regardless of how it's launched.
+    """
+    found = shutil.which("alpaca-mcp-server")
+    if found:
+        return found
+
+    candidates = [
+        os.path.expanduser("~/.local/bin/alpaca-mcp-server"),
+        "/usr/local/bin/alpaca-mcp-server",
+    ]
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+
+    raise FileNotFoundError(
+        "alpaca-mcp-server executable not found on PATH or in common install "
+        f"locations ({candidates}). Ensure it's installed (`pip install alpaca-mcp-server`) "
+        "and, if running under systemd, that the service's PATH includes the install directory."
+    )
 
 
 class AlpacaMCPToolError(Exception):
@@ -39,7 +70,7 @@ class AlpacaMCPClient:
     async def __aenter__(self):
         self._stack = AsyncExitStack()
         server_params = StdioServerParameters(
-            command="alpaca-mcp-server",
+            command=_resolve_server_command(),
             args=["--transport", "stdio"],
             env={
                 "ALPACA_API_KEY": self.config.alpaca.api_key,
