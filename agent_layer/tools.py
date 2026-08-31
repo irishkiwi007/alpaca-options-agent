@@ -64,9 +64,17 @@ TOOL_SCHEMAS = [
     {
         "name": "place_spread_order",
         "description": (
-            "Place a two-leg options spread order. This is the ONLY way to open a new position — "
+            "Open OR close a two-leg options spread order — you must specify which via the "
+            "required 'action' field. This is the ONLY way to place a multi-leg options order — "
             "naked single-leg orders are not available as a tool, by design. Both legs are required, "
             "on opposite sides (one buy, one sell), which structurally caps the position's maximum loss. "
+            "IMPORTANT: to close an existing spread, use this same tool with action='close' and the "
+            "correct buy/sell symbols for what you're doing in THIS order (e.g. if you originally "
+            "bought the 716 call and sold the 720 call to open, closing means buy_symbol=the 720 call "
+            "you're now buying back, sell_symbol=the 716 call you're now selling off). Do NOT call this "
+            "with action='open' when your intent is to reduce or close a position — that will incorrectly "
+            "open an ADDITIONAL position instead of closing the existing one. This exact mistake has "
+            "happened before and doubled a position's size unintentionally. "
             "The order will be rejected with an explanation if it fails any hard backstop: "
             "not being a genuine defined-risk spread, the price paid/received not being economically "
             "sane relative to the spread's width, or risking more than 15% of account equity."
@@ -74,15 +82,16 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "action": {"type": "string", "enum": ["open", "close"], "description": "Whether this order opens a new position or closes/reduces an existing one. Always required, never inferred."},
                 "underlying": {"type": "string"},
-                "buy_symbol": {"type": "string", "description": "OCC option symbol for the leg to buy"},
-                "sell_symbol": {"type": "string", "description": "OCC option symbol for the leg to sell"},
+                "buy_symbol": {"type": "string", "description": "OCC option symbol for the leg to buy in THIS order"},
+                "sell_symbol": {"type": "string", "description": "OCC option symbol for the leg to sell in THIS order"},
                 "contracts": {"type": "integer"},
                 "limit_price": {"type": "number", "description": "Net limit price for the spread; negative for net credit, positive for net debit"},
-                "max_loss_per_contract": {"type": "number", "description": "Your calculated worst-case loss for ONE contract of this spread, in dollars (e.g. spread width minus credit, times 100)"},
-                "rationale": {"type": "string", "description": "Your reasoning for this specific trade"},
+                "max_loss_per_contract": {"type": "number", "description": "Your calculated worst-case loss for ONE contract of this spread, in dollars (e.g. spread width minus credit, times 100). For a close order, use the remaining max loss on the position being closed."},
+                "rationale": {"type": "string", "description": "Your reasoning for this specific order, including why action is open vs close"},
             },
-            "required": ["underlying", "buy_symbol", "sell_symbol", "contracts", "limit_price", "max_loss_per_contract", "rationale"],
+            "required": ["action", "underlying", "buy_symbol", "sell_symbol", "contracts", "limit_price", "max_loss_per_contract", "rationale"],
         },
     },
     {
@@ -172,6 +181,10 @@ class ToolDispatcher:
         return json.dumps(result)
 
     async def _place_spread_order(self, tool_input: dict) -> str:
+        action = tool_input["action"]
+        if action not in ("open", "close"):
+            return json.dumps({"rejected": True, "backstop": "invalid_action", "reason": f"action must be 'open' or 'close', got '{action}'."})
+
         underlying = tool_input["underlying"]
         buy_symbol = tool_input["buy_symbol"]
         sell_symbol = tool_input["sell_symbol"]
@@ -202,12 +215,20 @@ class ToolDispatcher:
             log_event("backstop_rejected", {"backstop": "position_sizing", "reason": sizing_check.reason, "input": tool_input})
             return json.dumps({"rejected": True, "backstop": "position_sizing", "reason": sizing_check.reason})
 
-        # Both backstops passed — place the order.
+        # Both backstops passed — place the order. Intent suffix is derived
+        # directly and unambiguously from the required 'action' field — this
+        # is the fix for a real incident where a hardcoded "_to_open" caused
+        # an attempted position reduction to instead open an ADDITIONAL
+        # position, doubling size unintentionally. There is no code path
+        # left where intent can be inferred wrong: it's always exactly what
+        # the agent explicitly declared.
+        intent_suffix = "open" if action == "open" else "close"
         legs = [
-            {"symbol": sell_symbol, "side": "sell", "ratio_qty": "1", "position_intent": "sell_to_open"},
-            {"symbol": buy_symbol, "side": "buy", "ratio_qty": "1", "position_intent": "buy_to_open"},
+            {"symbol": sell_symbol, "side": "sell", "ratio_qty": "1", "position_intent": f"sell_to_{intent_suffix}"},
+            {"symbol": buy_symbol, "side": "buy", "ratio_qty": "1", "position_intent": f"buy_to_{intent_suffix}"},
         ]
         log_event("agent_order_submit", {
+            "action": action,
             "underlying": underlying,
             "sell_symbol": sell_symbol,
             "buy_symbol": buy_symbol,

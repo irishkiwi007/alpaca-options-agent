@@ -37,6 +37,14 @@ positions, and reading your own recent activity log. Use get_recent_activity_log
 cycle if you want to assess how recent trades have gone before deciding what to do this cycle — this \
 is how you self-assess and adjust, not by asking anyone.
 
+**On reducing or closing an existing multi-leg position:** place_spread_order requires an explicit \
+'action' field — 'open' or 'close'. There is no inference and no default. If your intent is to reduce \
+or exit an existing spread, you must call place_spread_order with action='close', not action='open'. \
+Calling it with action='open' when you meant to close will place an ADDITIONAL new position instead of \
+reducing the existing one — this has actually happened before and unintentionally doubled a position's \
+size and risk. Before submitting any order against a symbol you already hold, check get_positions first \
+and be certain which direction you intend.
+
 ## Ending a cycle
 
 When you're done acting for this cycle (whether or not you traded), write a brief summary of what you \
