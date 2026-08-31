@@ -109,6 +109,36 @@ TOOL_SCHEMAS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_most_active_stocks",
+        "description": (
+            "Screens the whole market for the most actively traded stocks right now, by volume or "
+            "trade count. Use this to discover candidates beyond SPY/QQQ — this is the actual "
+            "mechanism for looking at the broader liquid large-cap universe, not just a suggestion "
+            "to do so. A stock showing up here is, by definition, currently liquid enough to trade well."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "by": {"type": "string", "enum": ["volume", "trades"], "description": "Ranking metric, default volume"},
+                "top": {"type": "integer", "description": "How many to return, 1-100, default 10"},
+            },
+        },
+    },
+    {
+        "name": "get_market_movers",
+        "description": (
+            "Returns today's top gainers and losers by percentage move, real-time. Use this alongside "
+            "get_most_active_stocks to discover candidates with an actual catalyst or directional move "
+            "happening right now, not just habitually checking the same one or two symbols every cycle."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "top": {"type": "integer", "description": "How many gainers and losers each to return, 1-50, default 10"},
+            },
+        },
+    },
+    {
         "name": "get_recent_activity_log",
         "description": "Read recent logged events from this agent's own history — past trades, reasoning, and outcomes — to inform self-assessment and strategy adjustment.",
         "input_schema": {
@@ -162,6 +192,10 @@ class ToolDispatcher:
                 return await self._get_stock_bars(tool_input["symbol"], tool_input.get("minutes", 60))
             elif tool_name == "get_option_chain":
                 return await self._get_option_chain(tool_input["underlying"], tool_input.get("expiration"))
+            elif tool_name == "get_most_active_stocks":
+                return await self._get_most_active_stocks(tool_input.get("by", "volume"), tool_input.get("top", 10))
+            elif tool_name == "get_market_movers":
+                return await self._get_market_movers(tool_input.get("top", 10))
             elif tool_name == "place_spread_order":
                 return await self._place_spread_order(tool_input)
             elif tool_name == "close_position":
@@ -206,6 +240,16 @@ class ToolDispatcher:
             params["expiration_date"] = expiration
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_option_chain", params)
+        return json.dumps(result)
+
+    async def _get_most_active_stocks(self, by: str, top: int) -> str:
+        async with AlpacaMCPClient(self.config) as mcp:
+            result = await mcp.call_tool("get_most_active_stocks", {"by": by, "top": top})
+        return json.dumps(result)
+
+    async def _get_market_movers(self, top: int) -> str:
+        async with AlpacaMCPClient(self.config) as mcp:
+            result = await mcp.call_tool("get_market_movers", {"market_type": "stocks", "top": top})
         return json.dumps(result)
 
     async def _place_spread_order(self, tool_input: dict) -> str:
