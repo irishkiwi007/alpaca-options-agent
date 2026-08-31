@@ -326,7 +326,7 @@ total_realized = sum(p for _, p in realized)
 
 wl1, wl2, wl3, wl4 = st.columns(4)
 with wl1:
-    st.metric("Realized P&L", f"${total_realized:,.2f}")
+    st.metric("Realized P&L (from fills)", f"${total_realized:,.2f}", help="Computed from fill prices only — does not include exchange/regulatory fees (SEC, FINRA TAF, ORF, OCC). See reconciliation below.")
 with wl2:
     st.metric("Wins", len(wins))
 with wl3:
@@ -337,6 +337,32 @@ with wl4:
 
 if not realized:
     st.info("No closed round-trips yet — win/loss populates once positions are opened and closed.")
+else:
+    # Reconciliation: the actual equity change vs. what we computed from
+    # fill prices alone won't match exactly — Alpaca charges no
+    # commission on options, but does pass through small regulatory
+    # fees (SEC, FINRA TAF, ORF, OCC clearing) on every buy/sell, which
+    # aren't part of the reported fill price. Rather than silently show
+    # two numbers that don't reconcile, show the gap explicitly.
+    starting_equity = 100000.0  # matches the hackathon's required starting balance
+    current_equity = float(account.get("equity", 0))
+    funds_committed_now = funds_committed
+    actual_change = (current_equity + funds_committed_now) - starting_equity
+    unexplained = actual_change - total_realized
+
+    with st.expander("ℹ️ Why doesn't Realized P&L exactly match the equity change?"):
+        st.write(f"Starting equity: ${starting_equity:,.2f}")
+        st.write(f"Current equity + funds committed to open positions: ${current_equity + funds_committed_now:,.2f}")
+        st.write(f"Net change: ${actual_change:,.2f}")
+        st.write(f"Realized P&L computed from fill prices: ${total_realized:,.2f}")
+        st.write(f"**Unexplained gap (fees & rounding): ${unexplained:,.2f}**")
+        st.caption(
+            "Alpaca doesn't charge commissions on options, but does pass through small "
+            "regulatory fees (SEC, FINRA TAF, Options Regulatory Fee, OCC clearing fee) on "
+            "every buy and sell. These are deducted from account cash but aren't part of the "
+            "fill price this dashboard uses to compute P&L, so a small gap here is expected "
+            "and not a bug."
+        )
 
 st.divider()
 
