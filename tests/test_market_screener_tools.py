@@ -30,7 +30,7 @@ class FakeMCPClient:
         if name == "get_most_active_stocks":
             return {"_alpaca_mcp_security": {}, "data": {"most_actives": [{"symbol": "NVDA", "volume": 50000000}]}}
         if name == "get_market_movers":
-            return {"_alpaca_mcp_security": {}, "data": {"gainers": [{"symbol": "TSLA"}], "losers": [{"symbol": "META"}]}}
+            return {"_alpaca_mcp_security": {}, "data": {"gainers": [{"symbol": "TSLA", "price": 250.0}], "losers": [{"symbol": "META", "price": 600.0}]}}
         return {"_alpaca_mcp_security": {}, "data": {}}
 
 
@@ -99,3 +99,48 @@ def test_both_tools_registered_in_schema():
     names = [t["name"] for t in TOOL_SCHEMAS]
     assert "get_most_active_stocks" in names
     assert "get_market_movers" in names
+
+
+@pytest.mark.asyncio
+async def test_market_movers_filters_real_junk_seen_live(monkeypatch):
+    """
+    Regression test using the exact junk data observed in a real cycle:
+    get_market_movers surfaced BRLSW ($0.06, a warrant), BKHAR ($1.32),
+    and AEHL ($6.46) as top "gainers" — none tradeable via options.
+    NVDA, a legitimate large-cap, must survive filtering.
+    """
+    class FilterTestClient:
+        def __init__(self, config=None): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def call_tool(self, name, arguments):
+            return {"_alpaca_mcp_security": {}, "data": {
+                "gainers": [
+                    {"symbol": "BRLSW", "price": 0.0599, "percent_change": 97.04},
+                    {"symbol": "BKHAR", "price": 1.32, "percent_change": 89.93},
+                    {"symbol": "AEHL", "price": 6.46, "percent_change": 82.49},
+                    {"symbol": "NVDA", "price": 218.90, "percent_change": 5.2},
+                ],
+                "losers": [],
+            }}
+
+    import agent_layer.tools as tools_module
+    monkeypatch.setattr(tools_module, "AlpacaMCPClient", FilterTestClient)
+
+    dispatcher = ToolDispatcher()
+    result = await dispatcher._get_market_movers(10)
+    parsed = json.loads(result)
+
+    surviving_symbols = [g["symbol"] for g in parsed["gainers"]]
+    assert surviving_symbols == ["NVDA"]
+    assert "BRLSW" not in surviving_symbols
+    assert "BKHAR" not in surviving_symbols
+    assert "AEHL" not in surviving_symbols
+
+
+def test_warrant_heuristic_catches_real_example_no_false_positive():
+    dispatcher = ToolDispatcher()
+    assert dispatcher._looks_like_non_common_stock("BRLSW") is True  # real warrant seen live
+    assert dispatcher._looks_like_non_common_stock("NVDA") is False
+    assert dispatcher._looks_like_non_common_stock("AAPL") is False
+    assert dispatcher._looks_like_non_common_stock("SPY") is False

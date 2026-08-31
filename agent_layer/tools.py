@@ -242,15 +242,64 @@ class ToolDispatcher:
             result = await mcp.call_tool("get_option_chain", params)
         return json.dumps(result)
 
+    def _looks_like_non_common_stock(self, symbol: str) -> bool:
+        """
+        Heuristic filter: on Nasdaq-style tickers, a 5th character of W/U/R
+        typically denotes a warrant, unit, or rights offering — not the
+        underlying common stock, and these essentially never have liquid
+        (or any) listed options. Only applied to 5-character symbols
+        specifically to avoid false-positives on legitimate short tickers
+        that happen to end in those letters (e.g. 3-4 letter common tickers).
+        Found necessary via live testing: get_market_movers surfaced
+        "BRLSW" and "PASW" as top gainers, both warrants, not tradeable
+        via options at all.
+        """
+        return len(symbol) == 5 and symbol[-1] in ("W", "U", "R")
+
     async def _get_most_active_stocks(self, by: str, top: int) -> str:
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_most_active_stocks", {"by": by, "top": top})
-        return json.dumps(result)
+        data = unwrap_data(result)
+        actives = data.get("most_actives", []) if isinstance(data, dict) else []
+        filtered = [a for a in actives if not self._looks_like_non_common_stock(a.get("symbol", ""))]
+        removed = len(actives) - len(filtered)
+        return json.dumps({
+            "most_actives": filtered,
+            "note": (
+                f"Filtered out {removed} likely warrant/unit/rights symbols (not options-tradeable). "
+                "Remaining results are still raw 'most active by share volume' data, which skews toward "
+                "low-priced, high-turnover names — many won't have liquid options either. Cross-check "
+                "against get_option_chain before treating any of these as a real candidate."
+            ) if removed else "Note: raw 'most active by volume' data skews toward low-priced, high-turnover names — cross-check against get_option_chain before treating any as a real candidate.",
+        })
 
     async def _get_market_movers(self, top: int) -> str:
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("get_market_movers", {"market_type": "stocks", "top": top})
-        return json.dumps(result)
+        data = unwrap_data(result)
+        gainers = data.get("gainers", []) if isinstance(data, dict) else []
+        losers = data.get("losers", []) if isinstance(data, dict) else []
+
+        MIN_PRICE = 10.0  # excludes penny-stock noise; real optionable large-caps are essentially never this cheap
+
+        def keep(item):
+            symbol = item.get("symbol", "")
+            price = float(item.get("price", 0) or 0)
+            return price >= MIN_PRICE and not self._looks_like_non_common_stock(symbol)
+
+        filtered_gainers = [g for g in gainers if keep(g)]
+        filtered_losers = [l for l in losers if keep(l)]
+        removed = (len(gainers) - len(filtered_gainers)) + (len(losers) - len(filtered_losers))
+
+        return json.dumps({
+            "gainers": filtered_gainers,
+            "losers": filtered_losers,
+            "note": (
+                f"Filtered out {removed} symbols under ${MIN_PRICE:.0f} or that look like warrants/units/rights "
+                "(speculative penny-stock moves that dominate raw % gainers/losers data and essentially never "
+                "have liquid options markets)."
+            ),
+        })
 
     async def _place_spread_order(self, tool_input: dict) -> str:
         action = tool_input["action"]
