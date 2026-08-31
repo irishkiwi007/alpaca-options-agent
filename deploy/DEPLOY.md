@@ -25,7 +25,7 @@ git pull origin main
 ## 2. Install dependencies
 
 ```bash
-pip install -r requirements.txt --break-system-packages
+pip install -r requirements-agent.txt --break-system-packages
 ```
 
 ## 3. Set up `.env`

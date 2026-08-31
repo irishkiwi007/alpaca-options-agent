@@ -76,7 +76,7 @@ tests/             Unit tests for indicators, signal gating, risk governor, and 
 cp .env.example .env
 # fill in ALPACA_API_KEY, ALPACA_SECRET_KEY (paper account), ANTHROPIC_API_KEY
 
-pip install -r requirements.txt
+pip install -r requirements-agent.txt
 python3 -m pytest tests/ -v              # verify core logic first (51 tests, no network needed)
 
 # Reviewed mode (deterministic + agent review):

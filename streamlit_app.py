@@ -7,6 +7,12 @@ paper account's real state.
 
 Reads credentials from Streamlit secrets (st.secrets), never hardcoded.
 See README's "Demo dashboard" section for deployment steps.
+
+Note: this app's dependencies live in the root requirements.txt
+(lightweight — just streamlit + requests) so Streamlit Cloud's default
+auto-detection picks them up with zero configuration. The trading
+agent's own, much heavier dependencies live in requirements-agent.txt
+instead — install that one on the VM, not this one.
 """
 import streamlit as st
 import requests
