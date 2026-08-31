@@ -205,7 +205,7 @@ if not isinstance(all_orders, list):
     all_orders = []
 
 # ---- Top metrics ----
-funds_committed = sum(abs(float(p.get("cost_basis", 0) or 0)) for p in positions)
+funds_committed = abs(sum(float(p.get("cost_basis", 0) or 0) for p in positions))
 
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
@@ -213,7 +213,7 @@ with col1:
 with col2:
     st.metric("Buying Power", f"${float(account.get('buying_power', 0)):,.2f}")
 with col3:
-    st.metric("Funds Committed", f"${funds_committed:,.2f}", help="Total cost basis of all open positions right now.")
+    st.metric("Funds Committed", f"${funds_committed:,.2f}", help="Net cost basis of open positions (long minus short) — the actual capital paid out for the position, not each leg's cost added separately. For a net-credit position, this may understate true max-loss risk; check the position's own max_loss where relevant.")
 with col4:
     st.metric("Options Level", account.get("options_trading_level", "—"))
 with col5:
