@@ -71,6 +71,16 @@ journalctl -u alpaca-agent -f          # live log tail
 tail -f logs/events.jsonl               # structured decision/trade log
 ```
 
+## Checking for self-reported tooling issues
+
+The agent has one tool it can call the moment it notices one of its own tools behaving unexpectedly — it can't fix the tool itself, only report it clearly and immediately rather than you finding it later by reading trade history. Check for reports:
+
+```bash
+cat TOOLING_ISSUES.md
+```
+
+If it doesn't exist, nothing's been reported yet. Each entry includes severity, which tool, what the agent tried, what happened, and its best guess at the cause — review promptly, since a high-severity report likely means something that could recur if not fixed.
+
 ## Leaving it a note
 
 If you need to correct something it's assumed or flag information it should factor in — without stopping the process — write a note file:

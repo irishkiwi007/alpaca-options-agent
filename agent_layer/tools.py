@@ -116,6 +116,32 @@ TOOL_SCHEMAS = [
             "properties": {"limit": {"type": "integer", "description": "Number of recent events to retrieve, default 100"}},
         },
     },
+    {
+        "name": "report_tooling_issue",
+        "description": (
+            "Report a suspected bug or unexpected behavior in one of YOUR OWN tools — not a market "
+            "observation, a code/infrastructure problem. You cannot fix your own tools; you have no "
+            "access to your own source code and no ability to modify it. What you CAN do is report the "
+            "problem clearly and immediately, the moment you notice it, so a human can review and fix "
+            "it quickly rather than only discovering it later by reading through trade history. Use this "
+            "whenever a tool behaves in a way that doesn't match its description, produces a result you "
+            "didn't expect given your input, or you find yourself having to work around something rather "
+            "than use a tool as intended (e.g., using close_position leg-by-leg instead of a tool that "
+            "should have handled it directly). Report as soon as you notice the issue, in the same cycle "
+            "— don't wait."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "severity": {"type": "string", "enum": ["low", "medium", "high"], "description": "high = caused or risked an unintended trade/position change; medium = caused confusion or a workaround but no unintended action; low = cosmetic or informational"},
+                "tool_name": {"type": "string", "description": "The tool you believe has the problem"},
+                "what_you_tried": {"type": "string", "description": "What you called the tool to do, and with what inputs"},
+                "what_happened": {"type": "string", "description": "What actually happened, including any resulting order/position changes"},
+                "suspected_cause": {"type": "string", "description": "Your best guess at the root cause, if you have one — this is a hypothesis for the human to check, not a diagnosis you can verify yourself"},
+            },
+            "required": ["severity", "tool_name", "what_you_tried", "what_happened", "suspected_cause"],
+        },
+    },
 ]
 
 
@@ -144,6 +170,8 @@ class ToolDispatcher:
                 return await self._close_all_positions()
             elif tool_name == "get_recent_activity_log":
                 return self._get_recent_activity_log(tool_input.get("limit", 100))
+            elif tool_name == "report_tooling_issue":
+                return self._report_tooling_issue(tool_input)
             else:
                 return json.dumps({"error": f"Unknown tool: {tool_name}"})
         except Exception as e:
@@ -265,3 +293,56 @@ class ToolDispatcher:
         from execution.trade_logger import read_events
         events = read_events(limit=limit)
         return json.dumps(events)
+
+    def _report_tooling_issue(self, tool_input: dict) -> str:
+        """
+        Writes to two places: the structured event log (so it's part of
+        the same audit trail as everything else) AND a dedicated,
+        human-readable TOOLING_ISSUES.md file (so a human doesn't have
+        to dig through the full log to notice it). This is the agent's
+        only channel for surfacing a suspected bug in its own tools —
+        it cannot fix the tool itself, only report it clearly and
+        immediately so a human can.
+        """
+        import os
+        from datetime import datetime, timezone
+
+        severity = tool_input.get("severity", "medium")
+        tool_name = tool_input.get("tool_name", "unknown")
+        what_tried = tool_input.get("what_you_tried", "")
+        what_happened = tool_input.get("what_happened", "")
+        suspected_cause = tool_input.get("suspected_cause", "")
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        report = {
+            "timestamp": timestamp,
+            "severity": severity,
+            "tool_name": tool_name,
+            "what_you_tried": what_tried,
+            "what_happened": what_happened,
+            "suspected_cause": suspected_cause,
+        }
+        log_event("tooling_issue_reported", report)
+
+        issues_path = os.path.join(os.path.dirname(__file__), "..", "TOOLING_ISSUES.md")
+        severity_marker = {"high": "🔴", "medium": "🟡", "low": "⚪"}.get(severity, "🟡")
+        entry = (
+            f"\n## {severity_marker} [{severity.upper()}] {tool_name} — {timestamp}\n\n"
+            f"**What I tried:** {what_tried}\n\n"
+            f"**What happened:** {what_happened}\n\n"
+            f"**Suspected cause:** {suspected_cause}\n\n"
+            f"---\n"
+        )
+        file_exists = os.path.exists(issues_path)
+        with open(issues_path, "a") as f:
+            if not file_exists:
+                f.write("# Tooling Issues Reported by the Autonomous Agent\n\n"
+                        "Each entry below was written by the agent itself the moment it noticed a "
+                        "tool behaving unexpectedly. It cannot fix these — only report them for human "
+                        "review. Check this file for anything unreviewed.\n")
+            f.write(entry)
+
+        return json.dumps({
+            "acknowledged": True,
+            "message": "Issue reported. A human will review TOOLING_ISSUES.md. You cannot fix this yourself — if possible, avoid the problematic tool/pattern for the rest of this session.",
+        })

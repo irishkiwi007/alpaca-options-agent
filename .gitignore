@@ -8,3 +8,4 @@ venv/
 config/dynamic_overrides.json
 .pytest_cache/
 OPERATOR_NOTE
+TOOLING_ISSUES.md
