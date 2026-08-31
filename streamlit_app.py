@@ -242,40 +242,83 @@ for i, (label, keys) in enumerate(STATUS_GROUPS.items()):
 
 st.divider()
 
-# ---- Win / Loss (realized P&L via FIFO matching of fills, per leg symbol) ----
+# ---- Win / Loss (realized P&L via position_intent-aware FIFO on order legs) ----
 st.subheader("Win / Loss")
-activities = fetch(BASE_URL, "/v2/account/activities/FILL", {"page_size": 200})
-if not isinstance(activities, list):
-    activities = []
 
-# FIFO match buys/sells per symbol to approximate realized P&L per contract leg.
 from collections import defaultdict
-open_lots = defaultdict(list)  # symbol -> list of (qty, price)
-realized = []  # list of (symbol, pnl)
 
-for act in sorted(activities, key=lambda a: a.get("transaction_time", "")):
-    symbol = act.get("symbol", "")
-    side = act.get("side", "")
-    qty = float(act.get("qty", 0) or 0)
-    price = float(act.get("price", 0) or 0)
-    if not symbol or qty == 0:
-        continue
-    is_buy = side in ("buy", "buy_to_open", "buy_to_close")
-    if is_buy:
-        open_lots[symbol].append([qty, price])
-    else:
-        remaining = qty
-        while remaining > 0 and open_lots[symbol]:
-            lot_qty, lot_price = open_lots[symbol][0]
-            matched = min(lot_qty, remaining)
-            pnl = (price - lot_price) * matched * 100  # options multiplier
-            realized.append((symbol, pnl))
-            lot_qty -= matched
-            remaining -= matched
-            if lot_qty <= 0:
-                open_lots[symbol].pop(0)
-            else:
-                open_lots[symbol][0][0] = lot_qty
+
+def compute_realized_from_orders(orders):
+    """
+    Matches closing legs (sell_to_close / buy_to_close) against their
+    corresponding opening legs (buy_to_open / sell_to_open) using
+    position_intent directly, rather than inferring direction from side
+    alone. Short legs (sell_to_open, then buy_to_close) are tracked
+    separately from long legs — a plain buy/sell FIFO model silently
+    drops short-leg fills entirely, which is exactly what this strategy
+    does on every spread's short leg. Verified against real fill data.
+    Returns one realized P&L entry per closing leg-fill (summed across
+    whatever opening lots it matched against), not per matched lot pair,
+    so a single close isn't double-counted as multiple wins/losses.
+    """
+    long_lots = defaultdict(list)
+    short_lots = defaultdict(list)
+    realized = []
+
+    leg_events = []
+    for o in orders:
+        if o.get("status") != "filled":
+            continue
+        legs = o.get("legs") or [o]
+        ts = o.get("filled_at") or o.get("submitted_at") or ""
+        for leg in legs:
+            leg_events.append((ts, leg))
+    leg_events.sort(key=lambda x: x[0])
+
+    for ts, leg in leg_events:
+        symbol = leg.get("symbol")
+        intent = leg.get("position_intent") or ""
+        qty = float(leg.get("qty", 0) or 0)
+        price = float(leg.get("filled_avg_price", 0) or 0)
+        if not symbol or qty == 0 or price == 0:
+            continue
+
+        if intent == "buy_to_open":
+            long_lots[symbol].append([qty, price])
+        elif intent == "sell_to_open":
+            short_lots[symbol].append([qty, price])
+        elif intent == "sell_to_close":
+            remaining, leg_pnl = qty, 0.0
+            while remaining > 0 and long_lots[symbol]:
+                lot_qty, lot_price = long_lots[symbol][0]
+                matched = min(lot_qty, remaining)
+                leg_pnl += (price - lot_price) * matched * 100
+                lot_qty -= matched
+                remaining -= matched
+                if lot_qty <= 0:
+                    long_lots[symbol].pop(0)
+                else:
+                    long_lots[symbol][0][0] = lot_qty
+            if remaining < qty:
+                realized.append((symbol, leg_pnl))
+        elif intent == "buy_to_close":
+            remaining, leg_pnl = qty, 0.0
+            while remaining > 0 and short_lots[symbol]:
+                lot_qty, lot_price = short_lots[symbol][0]
+                matched = min(lot_qty, remaining)
+                leg_pnl += (lot_price - price) * matched * 100
+                lot_qty -= matched
+                remaining -= matched
+                if lot_qty <= 0:
+                    short_lots[symbol].pop(0)
+                else:
+                    short_lots[symbol][0][0] = lot_qty
+            if remaining < qty:
+                realized.append((symbol, leg_pnl))
+    return realized
+
+
+realized = compute_realized_from_orders(all_orders)
 
 wins = [p for _, p in realized if p > 0]
 losses = [p for _, p in realized if p < 0]
