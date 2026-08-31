@@ -1,36 +1,35 @@
 """
 Streamlit demo dashboard for the hackathon's "Demo Application Platform"
-requirement. Deployed on Streamlit Community Cloud, this queries Alpaca's
-REST API directly — it doesn't depend on the VM running main_autonomous.py
-being up, so it works as a standalone, always-available demo of the live
-paper account's real state.
+requirement. Queries Alpaca's REST API directly — doesn't depend on the
+VM running main_autonomous.py being up, so it works as a standalone,
+always-available demo of the live paper account's real state.
 
 Reads credentials from Streamlit secrets (st.secrets), never hardcoded.
-See README's "Demo dashboard" section for deployment steps.
 
 Note: this app's dependencies live in the root requirements.txt
-(lightweight — just streamlit + requests) so Streamlit Cloud's default
-auto-detection picks them up with zero configuration. The trading
-agent's own, much heavier dependencies live in requirements-agent.txt
-instead — install that one on the VM, not this one.
+(lightweight — streamlit + requests + plotly) so Streamlit Cloud's
+default auto-detection picks them up with zero configuration. The
+trading agent's own, much heavier dependencies live in
+requirements-agent.txt instead — install that one on the VM, not this one.
+
+Honest limitation: this dashboard only sees what Alpaca's API exposes
+(orders, positions, fills, bars). It does NOT have access to the
+agent's own written reasoning/rationale for a trade — that lives only
+in logs/events.jsonl on the VM, which this hosted app has no connection
+to. The trade detail page shows real market context (a price chart
+around the decision) but not the agent's narrated thought process.
 """
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Circuit Breaker — Live Demo", page_icon="⚡", layout="wide")
 
-# ---- Theme (matches the project's cover image / deck brand) ----
 st.markdown("""
 <style>
     .stApp { background-color: #0A0E17; }
-    h1, h2, h3, p, span, div { color: #F9FAFB; }
-    .metric-card {
-        background-color: #1F2937;
-        border-radius: 10px;
-        padding: 20px;
-        margin-bottom: 10px;
-    }
+    h1, h2, h3, p, span, div, label { color: #F9FAFB; }
     .stDataFrame { background-color: #1F2937; }
 </style>
 """, unsafe_allow_html=True)
@@ -38,6 +37,7 @@ st.markdown("""
 API_KEY = st.secrets.get("ALPACA_API_KEY", "")
 SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
 BASE_URL = st.secrets.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+DATA_URL = st.secrets.get("ALPACA_DATA_URL", "https://data.alpaca.markets")
 
 HEADERS = {
     "APCA-API-KEY-ID": API_KEY,
@@ -45,17 +45,21 @@ HEADERS = {
 }
 
 
-def fetch(path: str):
+def fetch(base: str, path: str, params: dict = None):
     try:
-        resp = requests.get(f"{BASE_URL}{path}", headers=HEADERS, timeout=10)
+        resp = requests.get(f"{base}{path}", headers=HEADERS, params=params or {}, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
 
 
-st.title("⚡ Circuit Breaker")
-st.caption("An autonomous AI trading agent, built on Alpaca — live paper account status")
+def parse_underlying(option_symbol: str) -> str:
+    """OCC symbol: root + YYMMDD(6) + C/P(1) + strike*1000(8) = 15 trailing chars."""
+    if not option_symbol or len(option_symbol) < 16:
+        return option_symbol or "—"
+    return option_symbol[:-15]
+
 
 if not API_KEY or not SECRET_KEY:
     st.error(
@@ -64,61 +68,286 @@ if not API_KEY or not SECRET_KEY:
     )
     st.stop()
 
-account = fetch("/v2/account")
+# ---------------------------------------------------------------
+# Session state / simple router: dashboard vs. trade detail
+# ---------------------------------------------------------------
+if "view" not in st.session_state:
+    st.session_state.view = "dashboard"
+if "selected_order_id" not in st.session_state:
+    st.session_state.selected_order_id = None
+
+
+def go_to_detail(order_id: str):
+    st.session_state.view = "detail"
+    st.session_state.selected_order_id = order_id
+    st.rerun()
+
+
+def go_to_dashboard():
+    st.session_state.view = "dashboard"
+    st.session_state.selected_order_id = None
+    st.rerun()
+
+
+# =================================================================
+# DETAIL VIEW
+# =================================================================
+if st.session_state.view == "detail" and st.session_state.selected_order_id:
+    order_id = st.session_state.selected_order_id
+    order = fetch(BASE_URL, f"/v2/orders/{order_id}")
+
+    if st.button("← Back to dashboard"):
+        go_to_dashboard()
+
+    if "error" in order:
+        st.error(f"Could not load order {order_id}: {order['error']}")
+        st.stop()
+
+    legs = order.get("legs") or [order]
+    underlying = parse_underlying(legs[0].get("symbol", "")) if legs else "—"
+
+    st.title(f"Trade Detail — {underlying}")
+    st.caption(f"Order ID: {order_id}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Status", order.get("status", "—"))
+    with c2:
+        st.metric("Limit Price", f"${float(order.get('limit_price', 0) or 0):.2f}")
+    with c3:
+        st.metric("Contracts", order.get("qty", "—"))
+    with c4:
+        submitted = (order.get("submitted_at") or "")[:19].replace("T", " ")
+        st.metric("Submitted", submitted or "—")
+
+    st.subheader("Legs")
+    leg_rows = [{
+        "Symbol": l.get("symbol"),
+        "Side": l.get("side"),
+        "Intent": l.get("position_intent"),
+        "Qty": l.get("qty"),
+        "Status": l.get("status"),
+        "Filled Avg Price": l.get("filled_avg_price") or "—",
+    } for l in legs]
+    st.dataframe(leg_rows, use_container_width=True, hide_index=True)
+
+    # ---- Price chart: what the market looked like around this order ----
+    st.subheader(f"Market Context — {underlying}")
+    st.caption("Price action around the time this trade was submitted (not the agent's written reasoning — see note below).")
+
+    try:
+        submitted_at = datetime.strptime(submitted, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        submitted_at = datetime.now(timezone.utc)
+
+    start = (submitted_at - timedelta(hours=3)).isoformat()
+    end = (submitted_at + timedelta(hours=3)).isoformat()
+
+    bars_resp = fetch(DATA_URL, f"/v2/stocks/{underlying}/bars", {
+        "timeframe": "5Min", "start": start, "end": end, "limit": 200,
+    })
+    bars = bars_resp.get("bars", []) if isinstance(bars_resp, dict) else []
+
+    if bars:
+        fig = go.Figure(data=[go.Candlestick(
+            x=[b["t"] for b in bars],
+            open=[b["o"] for b in bars],
+            high=[b["h"] for b in bars],
+            low=[b["l"] for b in bars],
+            close=[b["c"] for b in bars],
+            increasing_line_color="#22D3A8", decreasing_line_color="#EF4444",
+        )])
+        fig.add_vline(x=submitted_at.isoformat(), line_dash="dash", line_color="#F59E0B",
+                       annotation_text="Order submitted", annotation_font_color="#F59E0B")
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#0A0E17", plot_bgcolor="#0A0E17",
+            height=450, margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_rangeslider_visible=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info(
+            f"No bar data available for {underlying} in this window — likely outside market "
+            "hours, or the underlying couldn't be parsed correctly from the option symbol."
+        )
+
+    st.divider()
+    st.caption(
+        "ℹ️ This chart shows real market price action around the order, pulled live from Alpaca. "
+        "It does not show the agent's own written rationale for the trade — that lives in the "
+        "structured event log on the deployment VM, which this hosted dashboard doesn't have "
+        "access to. See the GitHub repo's logs/events.jsonl for the full reasoning trail."
+    )
+
+    with st.expander("Raw order JSON"):
+        st.json(order)
+
+    st.stop()
+
+# =================================================================
+# DASHBOARD VIEW
+# =================================================================
+st.title("⚡ Circuit Breaker")
+st.caption("An autonomous AI trading agent, built on Alpaca — live paper account status")
+
+account = fetch(BASE_URL, "/v2/account")
 
 if "error" in account:
     st.warning(f"Could not reach Alpaca right now: {account['error']}")
-else:
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Equity", f"${float(account.get('equity', 0)):,.2f}")
-    with col2:
-        st.metric("Buying Power", f"${float(account.get('buying_power', 0)):,.2f}")
-    with col3:
-        st.metric("Options Level", account.get("options_trading_level", "—"))
-    with col4:
-        st.metric("Status", account.get("status", "—"))
+    st.stop()
+
+positions = fetch(BASE_URL, "/v2/positions")
+if not isinstance(positions, list):
+    positions = []
+
+all_orders = fetch(BASE_URL, "/v2/orders", {"status": "all", "limit": 200, "direction": "desc"})
+if not isinstance(all_orders, list):
+    all_orders = []
+
+# ---- Top metrics ----
+funds_committed = sum(abs(float(p.get("cost_basis", 0) or 0)) for p in positions)
+
+col1, col2, col3, col4, col5 = st.columns(5)
+with col1:
+    st.metric("Equity", f"${float(account.get('equity', 0)):,.2f}")
+with col2:
+    st.metric("Buying Power", f"${float(account.get('buying_power', 0)):,.2f}")
+with col3:
+    st.metric("Funds Committed", f"${funds_committed:,.2f}", help="Total cost basis of all open positions right now.")
+with col4:
+    st.metric("Options Level", account.get("options_trading_level", "—"))
+with col5:
+    st.metric("Status", account.get("status", "—"))
 
 st.divider()
 
-left, right = st.columns([1, 1])
+# ---- Order status breakdown ----
+st.subheader("Order Status Breakdown")
+status_counts = {}
+for o in all_orders:
+    s = o.get("status", "unknown")
+    status_counts[s] = status_counts.get(s, 0) + 1
 
-with left:
-    st.subheader("Open Positions")
-    positions = fetch("/v2/positions")
-    if isinstance(positions, list) and positions:
-        rows = [{
-            "Symbol": p.get("symbol"),
-            "Side": p.get("side"),
-            "Qty": p.get("qty"),
-            "Avg Entry": f"${float(p.get('avg_entry_price', 0)):.2f}",
-            "Unrealized P/L": f"${float(p.get('unrealized_pl', 0)):.2f}",
-        } for p in positions]
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    elif isinstance(positions, list):
-        st.info("No open positions right now.")
-    else:
-        st.warning("Could not load positions.")
+STATUS_GROUPS = {
+    "Filled": ["filled"],
+    "Open / Pending": ["new", "accepted", "pending_new", "accepted_for_bidding", "held", "partially_filled"],
+    "Cancelled": ["canceled", "expired"],
+    "Rejected": ["rejected"],
+}
+bcols = st.columns(len(STATUS_GROUPS))
+for i, (label, keys) in enumerate(STATUS_GROUPS.items()):
+    count = sum(status_counts.get(k, 0) for k in keys)
+    with bcols[i]:
+        st.metric(label, count)
 
-with right:
-    st.subheader("Recent Orders")
-    orders = fetch("/v2/orders?status=all&limit=10&direction=desc")
-    if isinstance(orders, list) and orders:
-        rows = []
-        for o in orders:
-            legs = o.get("legs") or [o]
-            symbols = ", ".join(l.get("symbol", "") for l in legs if l.get("symbol"))
-            rows.append({
-                "Submitted": (o.get("submitted_at") or "")[:19].replace("T", " "),
-                "Symbol(s)": symbols or o.get("symbol", "—"),
-                "Type": o.get("order_class", o.get("type", "—")),
-                "Status": o.get("status"),
-            })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    elif isinstance(orders, list):
-        st.info("No orders yet.")
+st.divider()
+
+# ---- Win / Loss (realized P&L via FIFO matching of fills, per leg symbol) ----
+st.subheader("Win / Loss")
+activities = fetch(BASE_URL, "/v2/account/activities/FILL", {"page_size": 200})
+if not isinstance(activities, list):
+    activities = []
+
+# FIFO match buys/sells per symbol to approximate realized P&L per contract leg.
+from collections import defaultdict
+open_lots = defaultdict(list)  # symbol -> list of (qty, price)
+realized = []  # list of (symbol, pnl)
+
+for act in sorted(activities, key=lambda a: a.get("transaction_time", "")):
+    symbol = act.get("symbol", "")
+    side = act.get("side", "")
+    qty = float(act.get("qty", 0) or 0)
+    price = float(act.get("price", 0) or 0)
+    if not symbol or qty == 0:
+        continue
+    is_buy = side in ("buy", "buy_to_open", "buy_to_close")
+    if is_buy:
+        open_lots[symbol].append([qty, price])
     else:
-        st.warning("Could not load orders.")
+        remaining = qty
+        while remaining > 0 and open_lots[symbol]:
+            lot_qty, lot_price = open_lots[symbol][0]
+            matched = min(lot_qty, remaining)
+            pnl = (price - lot_price) * matched * 100  # options multiplier
+            realized.append((symbol, pnl))
+            lot_qty -= matched
+            remaining -= matched
+            if lot_qty <= 0:
+                open_lots[symbol].pop(0)
+            else:
+                open_lots[symbol][0][0] = lot_qty
+
+wins = [p for _, p in realized if p > 0]
+losses = [p for _, p in realized if p < 0]
+total_realized = sum(p for _, p in realized)
+
+wl1, wl2, wl3, wl4 = st.columns(4)
+with wl1:
+    st.metric("Realized P&L", f"${total_realized:,.2f}")
+with wl2:
+    st.metric("Wins", len(wins))
+with wl3:
+    st.metric("Losses", len(losses))
+with wl4:
+    win_rate = (len(wins) / len(realized) * 100) if realized else 0
+    st.metric("Win Rate", f"{win_rate:.0f}%" if realized else "—")
+
+if not realized:
+    st.info("No closed round-trips yet — win/loss populates once positions are opened and closed.")
+
+st.divider()
+
+# ---- Open positions ----
+st.subheader("Open Positions")
+if positions:
+    rows = [{
+        "Symbol": p.get("symbol"),
+        "Side": p.get("side"),
+        "Qty": p.get("qty"),
+        "Avg Entry": f"${float(p.get('avg_entry_price', 0)):.2f}",
+        "Cost Basis": f"${abs(float(p.get('cost_basis', 0))):.2f}",
+        "Unrealized P/L": f"${float(p.get('unrealized_pl', 0)):.2f}",
+    } for p in positions]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+else:
+    st.info("No open positions right now.")
+
+st.divider()
+
+# ---- Trade history — click a row to see detail + chart ----
+st.subheader("Trade History")
+st.caption("Click a row, then use the button below to open its detail page with a price chart.")
+
+if all_orders:
+    order_rows = []
+    for o in all_orders:
+        legs = o.get("legs") or [o]
+        underlying = parse_underlying(legs[0].get("symbol", "")) if legs else "—"
+        order_rows.append({
+            "Submitted": (o.get("submitted_at") or "")[:19].replace("T", " "),
+            "Underlying": underlying,
+            "Class": o.get("order_class", o.get("type", "—")),
+            "Status": o.get("status"),
+            "Qty": o.get("qty"),
+            "Limit": f"${float(o.get('limit_price', 0) or 0):.2f}",
+            "_order_id": o.get("id"),
+        })
+
+    event = st.dataframe(
+        [{k: v for k, v in r.items() if not k.startswith("_")} for r in order_rows],
+        use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="trade_table",
+    )
+
+    selected_rows = event.selection.rows if hasattr(event, "selection") else []
+    if selected_rows:
+        idx = selected_rows[0]
+        chosen_id = order_rows[idx]["_order_id"]
+        st.write(f"Selected: **{order_rows[idx]['Underlying']}** — {order_rows[idx]['Status']} — {order_rows[idx]['Submitted']}")
+        if st.button("🔍 View trade detail & chart", type="primary"):
+            go_to_detail(chosen_id)
+else:
+    st.info("No orders yet.")
 
 st.divider()
 
@@ -134,7 +363,7 @@ with c3:
     st.markdown("**🔄 Self-assessing**")
     st.write("Reviews its own recent activity each cycle and adjusts its own approach — not a fixed script.")
 
-st.caption(f"Last refreshed: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC · [View source on GitHub](https://github.com/irishkiwi007/alpaca-options-agent)")
+st.caption(f"Last refreshed: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC · [View source on GitHub](https://github.com/irishkiwi007/alpaca-options-agent)")
 
 if st.button("🔄 Refresh"):
     st.rerun()
