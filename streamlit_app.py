@@ -96,7 +96,7 @@ def format_nyc(iso_ts: str) -> str:
         return iso_ts
 
 
-def build_trade_records(orders, live_positions):
+def build_trade_records(orders, live_positions, expiry_activities=None):
     """
     Builds ONE record per actual round-trip TRADE, not one per order and
     not one per closing leg. Groups fills by (underlying, expiration),
@@ -108,6 +108,17 @@ def build_trade_records(orders, live_positions):
 
     Currently-open trades (never returned to flat) are included with
     status='open' and outcome = live unrealized P&L from the position.
+
+    expiry_activities: Alpaca's OPEXP non-trade activities. An option
+    expiring OTM never generates a closing ORDER at all — Alpaca just
+    flattens the position silently — so without this, an expired
+    position would incorrectly stay classified as 'open' forever, with
+    no outcome. Each OPEXP event is converted into a synthetic
+    zero-price close (sell_to_close for a long leg that expired
+    worthless, buy_to_close for a short leg that expired worthless and
+    kept its full credit), correctly determined from which side
+    (long_lots/short_lots) the symbol is actually sitting in at that
+    point in the timeline — not assumed.
     """
     leg_events = []
     for o in orders:
@@ -129,7 +140,30 @@ def build_trade_records(orders, live_positions):
                 "qty": qty,
                 "price": float(leg.get("filled_avg_price", 0) or 0),
                 "order_class": order_class,
+                "source": "order",
             })
+
+    for act in (expiry_activities or []):
+        symbol = act.get("symbol")
+        raw_qty = act.get("qty")
+        if not symbol or raw_qty is None:
+            continue
+        qty = abs(float(raw_qty))
+        if qty == 0:
+            continue
+        date_str = act.get("date") or ""
+        ts = f"{date_str}T20:00:00Z" if date_str and "T" not in date_str else (date_str or "")
+        leg_events.append({
+            "ts": ts,
+            "symbol": symbol,
+            "intent": "expire",  # resolved to sell_to_close/buy_to_close during processing, based on actual position side
+            "side": None,
+            "qty": qty,
+            "price": 0.0,
+            "order_class": "expiration",
+            "source": "expiration",
+        })
+
     leg_events.sort(key=lambda e: e["ts"])
 
     groups = defaultdict(list)
@@ -190,6 +224,22 @@ def build_trade_records(orders, live_positions):
         for e in events:
             current_events.append(e)
             symbol, intent, qty, price = e["symbol"], e["intent"], e["qty"], e["price"]
+
+            if intent == "expire":
+                # Resolve based on which side this symbol is actually sitting
+                # on right now — not assumed. A long leg expiring worthless
+                # needs sell_to_close (it's worth $0); a short leg expiring
+                # worthless needs buy_to_close (costs $0 to "buy back" — the
+                # full credit is kept). If it's in neither, there's nothing
+                # to close (already flat, or an activity we can't attribute);
+                # skip rather than guess.
+                if long_lots[symbol]:
+                    intent = "sell_to_close"
+                elif short_lots[symbol]:
+                    intent = "buy_to_close"
+                else:
+                    continue
+                e["intent"] = intent  # so flush() correctly counts this as a close event
 
             if intent == "buy_to_open":
                 long_lots[symbol].append([qty, price])
@@ -276,10 +326,11 @@ def render_leg_table(events, empty_msg):
     rows = [{
         "Time (NYC)": format_nyc(e["ts"]),
         "Symbol": e["symbol"],
-        "Side": e["side"],
+        "Side": e.get("side") or "—",
         "Intent": e["intent"],
         "Qty": e["qty"],
         "Fill Price": f"${e['price']:.2f}",
+        "Source": "Expired worthless" if e.get("source") == "expiration" else "Order fill",
     } for e in events]
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
@@ -300,7 +351,14 @@ all_orders = fetch(BASE_URL, "/v2/orders", {"status": "all", "limit": 200, "dire
 if not isinstance(all_orders, list):
     all_orders = []
 
-trades = build_trade_records(all_orders, positions)
+# OPEXP = Alpaca's non-trade activity for an option expiring — never
+# shows up as an order at all, so without this, an expired position
+# would silently stay stuck as "open" forever with no outcome.
+expiry_activities = fetch(BASE_URL, "/v2/account/activities/OPEXP")
+if not isinstance(expiry_activities, list):
+    expiry_activities = []
+
+trades = build_trade_records(all_orders, positions, expiry_activities)
 
 # =================================================================
 # DETAIL VIEW
@@ -482,11 +540,19 @@ else:
 
 st.divider()
 
-# ---- Trade History — one row per TRADE, click through for detail ----
+# ---- Trade History — CLOSED trades only, one row per TRADE ----
+# Open positions already have their own section above (Open Positions);
+# including them here too was redundant and confusing — found via user
+# report: a single completed trade appeared to show as "two lines"
+# because a still-open, unrelated position was also being listed here
+# with status='open' the moment it was placed, before it had any
+# actual outcome yet.
 st.subheader("Trade History")
-st.caption("One row per trade — click a row, then use the button below to open its detail page with a price chart.")
+st.caption("Completed trades only — click a row, then use the button below to open its detail page with a price chart. Still-open positions are in Open Positions, above.")
 
-if trades:
+closed_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "closed"]
+
+if closed_trades_indexed:
     trade_rows = [{
         "Underlying": t["underlying"],
         "Time Opened (NYC)": format_nyc(t["time_opened"]),
@@ -495,7 +561,7 @@ if trades:
         "Outcome": f"${t['outcome']:,.2f}",
         "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
         "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
-    } for t in trades]
+    } for _, t in closed_trades_indexed]
 
     event = st.dataframe(
         trade_rows, use_container_width=True, hide_index=True,
@@ -504,12 +570,13 @@ if trades:
 
     selected_rows = event.selection.rows if hasattr(event, "selection") else []
     if selected_rows:
-        idx = selected_rows[0]
-        st.write(f"Selected: **{trades[idx]['underlying']}** — {trades[idx]['status']} — {trade_rows[idx]['Time Opened (NYC)']}")
+        position_in_filtered_list = selected_rows[0]
+        original_idx, selected_trade = closed_trades_indexed[position_in_filtered_list]
+        st.write(f"Selected: **{selected_trade['underlying']}** — {selected_trade['status']} — {trade_rows[position_in_filtered_list]['Time Opened (NYC)']}")
         if st.button("🔍 View trade detail & chart", type="primary"):
-            go_to_detail(idx)
+            go_to_detail(original_idx)
 else:
-    st.info("No trades yet.")
+    st.info("No completed trades yet. Check Open Positions above if something is currently active.")
 
 st.divider()
 

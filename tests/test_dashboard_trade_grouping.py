@@ -31,6 +31,80 @@ def _load_functions():
 
 format_nyc, build_trade_records = _load_functions()
 
+
+def test_expired_worthless_leg_closes_trade_with_realistic_alpaca_shape():
+    """
+    Alpaca never generates an order for an option expiring OTM — only a
+    non-trade OPEXP activity, with net_amount "0". Without handling
+    this, a spread with an expired leg would incorrectly stay 'open'
+    forever. Mixed scenario: long leg actively closed for a gain, short
+    leg expires worthless (keeping its full credit).
+    """
+    orders = [
+        {"status": "filled", "filled_at": "2026-09-05T14:00:00", "order_class": "mleg", "legs": [
+            {"symbol": "SPY260911C00770000", "position_intent": "buy_to_open", "side": "buy", "qty": "10", "filled_avg_price": "2.00"},
+            {"symbol": "SPY260911C00775000", "position_intent": "sell_to_open", "side": "sell", "qty": "10", "filled_avg_price": "0.80"},
+        ]},
+        {"status": "filled", "filled_at": "2026-09-11T15:00:00", "order_class": "simple", "legs": [
+            {"symbol": "SPY260911C00770000", "position_intent": "sell_to_close", "side": "sell", "qty": "10", "filled_avg_price": "3.50"},
+        ]},
+    ]
+    expiry_activities = [
+        {"activity_type": "OPEXP", "id": "test123", "date": "2026-09-11", "net_amount": "0",
+         "description": "Option Expiry", "symbol": "SPY260911C00775000", "qty": "-10", "status": "executed"},
+    ]
+    trades = build_trade_records(orders, [], expiry_activities)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t["status"] == "closed"
+    # long gain (3.50-2.00)*10*100=$1500 + short kept full credit 0.80*10*100=$800 = $2300
+    assert abs(t["outcome"] - 2300.0) < 0.01
+    sources = sorted(e["source"] for e in t["close_events"])
+    assert sources == ["expiration", "order"]
+
+
+def test_fully_worthless_expiry_with_zero_manual_closes():
+    """Whole spread expires OTM, no closing order ever placed at all."""
+    orders = [
+        {"status": "filled", "filled_at": "2026-09-05T14:00:00", "order_class": "mleg", "legs": [
+            {"symbol": "SPY260911C00770000", "position_intent": "buy_to_open", "side": "buy", "qty": "10", "filled_avg_price": "2.00"},
+            {"symbol": "SPY260911C00775000", "position_intent": "sell_to_open", "side": "sell", "qty": "10", "filled_avg_price": "0.80"},
+        ]},
+    ]
+    expiry_activities = [
+        {"activity_type": "OPEXP", "date": "2026-09-11", "symbol": "SPY260911C00770000", "qty": "-10"},
+        {"activity_type": "OPEXP", "date": "2026-09-11", "symbol": "SPY260911C00775000", "qty": "-10"},
+    ]
+    trades = build_trade_records(orders, [], expiry_activities)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t["status"] == "closed"
+    assert abs(t["outcome"] - (-1200.0)) < 0.01  # net debit paid at open, lost in full
+    assert t["profit_loss"] == "loss"
+
+
+def test_no_expiry_activities_does_not_break_anything():
+    """Backward compatibility: omitting expiry_activities entirely must still work."""
+    trades = build_trade_records([], [])
+    assert trades == []
+
+
+def test_open_trade_not_shown_as_closed_without_matching_expiry():
+    """A position with no close order and no matching expiry activity must stay 'open', not silently vanish or misclassify."""
+    orders = [
+        {"status": "filled", "filled_at": "2026-09-05T14:00:00", "order_class": "mleg", "legs": [
+            {"symbol": "SPY260911C00770000", "position_intent": "buy_to_open", "side": "buy", "qty": "10", "filled_avg_price": "2.00"},
+            {"symbol": "SPY260911C00775000", "position_intent": "sell_to_open", "side": "sell", "qty": "10", "filled_avg_price": "0.80"},
+        ]},
+    ]
+    live_positions = [
+        {"symbol": "SPY260911C00770000", "unrealized_pl": "50.0"},
+        {"symbol": "SPY260911C00775000", "unrealized_pl": "-20.0"},
+    ]
+    trades = build_trade_records(orders, live_positions, expiry_activities=[])
+    assert len(trades) == 1
+    assert trades[0]["status"] == "open"
+
 REAL_QQQ_ORDERS = [
     {"status": "filled", "filled_at": "2026-08-31T16:01:12", "order_class": "simple", "legs": None,
      "symbol": "QQQ260902C00716000", "position_intent": "sell_to_close", "side": "sell", "qty": "80", "filled_avg_price": "2.32"},
