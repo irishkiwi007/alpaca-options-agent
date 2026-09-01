@@ -630,11 +630,26 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             fig.add_vline(x=exit_dt.isoformat(), line_dash="dash", line_color="#0EA5E9",
                            annotation_text="Exit", annotation_font_color="#0EA5E9")
         fig.update_layout(
-            template="plotly_dark", paper_bgcolor="#0A0E17", plot_bgcolor="#0A0E17",
+            template="plotly_dark",
+            paper_bgcolor="#151B2B",  # deliberately lighter than the page background (#0A0E17)
+            plot_bgcolor="#151B2B",   # so the chart's own boundary is visually obvious, not blending in
             height=450, margin=dict(l=10, r=10, t=30, b=10),
             xaxis_rangeslider_visible=False,
+            dragmode=False,  # a scroll gesture starting on the chart was being captured as a
+                              # zoom-select drag instead of scrolling the page — this was the
+                              # actual cause of "touching the chart resizes it" while scrolling.
         )
-        st.plotly_chart(fig, use_container_width=True)
+        # Force the modebar (autoscale/reset button included) to always be visible rather than
+        # only appearing on hover, which doesn't work on a touch screen at all.
+        chart_config = {
+            "scrollZoom": False,      # pinch/wheel no longer zooms the chart unexpectedly
+            "displayModeBar": True,
+            "displaylogo": False,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        }
+        with st.container(border=True):  # gives the chart a real, visible boundary on the page
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
+        st.caption("Chart is zoom/pan-locked by default so it doesn't interfere with scrolling — use the toolbar above the chart (visible on tap) to zoom or reset the view.")
     else:
         st.info(f"No bar data available for {trade['underlying']} in this window.")
 
