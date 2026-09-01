@@ -233,12 +233,20 @@ def format_nyc(iso_ts: str) -> str:
 def build_trade_records(orders, live_positions, expiry_activities=None):
     """
     Builds ONE record per actual round-trip TRADE, not one per order and
-    not one per closing leg. Groups fills by (underlying, expiration),
-    walking chronologically and tracking when the group's long AND short
-    side both return to fully flat — splitting into a new trade whenever
-    that happens, so two genuinely separate trades on the same underlying
-    aren't merged, but one trade opened/closed across multiple orders is
-    correctly treated as one.
+    not one per closing leg. Tracks trades by their ACTUAL set of
+    symbols (specific strikes), not just underlying+expiration — two
+    different strike combinations sharing the same underlying and
+    expiry are genuinely different trades and must never be merged,
+    even though earlier versions of this grouped by underlying+expiry
+    alone and incorrectly treated them as one trade with "modifications".
+    Found via a real account with 3 separate same-day Sep 3 QQQ trades
+    (707/715, 709/716, 712/720) that were all being merged into one.
+
+    Multiple trades can be active concurrently within the same
+    underlying+expiration group — each is tracked independently by
+    which specific symbols currently belong to it, only merging
+    genuine repeat activity on the SAME symbols (true modifications),
+    never activity on a different strike combination.
 
     Currently-open trades (never returned to flat) are included with
     status='open' and outcome = live unrealized P&L from the position.
@@ -306,14 +314,27 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
 
     trades = []
     for gkey, events in groups.items():
-        long_lots = defaultdict(list)
-        short_lots = defaultdict(list)
-        long_remaining = 0.0
-        short_remaining = 0.0
-        current_events = []
-        pending_pnl = 0.0
+        active_trades = []  # each: dict with its OWN symbols/lots/remaining/events/pnl
 
-        def flush(is_open):
+        def new_active_trade():
+            return {
+                "symbols": set(),
+                "long_lots": defaultdict(list),
+                "short_lots": defaultdict(list),
+                "long_remaining": 0.0,
+                "short_remaining": 0.0,
+                "events": [],
+                "pending_pnl": 0.0,
+            }
+
+        def find_active_trade_for(symbol):
+            for at in active_trades:
+                if symbol in at["symbols"]:
+                    return at
+            return None
+
+        def flush(at, is_open):
+            current_events = at["events"]
             if not current_events:
                 return
             open_events = [e for e in current_events if e["intent"] in ("buy_to_open", "sell_to_open")]
@@ -323,16 +344,10 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
             time_opened = open_events[0]["ts"] if open_events else current_events[0]["ts"]
             time_closed = close_events[-1]["ts"] if close_events else None
 
-            # Split opens into "initial" (the very first opening order's timestamp)
-            # vs "modifications" (any later opening order added to the same trade).
             initial_ts = open_events[0]["ts"] if open_events else None
             initial_open_events = [e for e in open_events if e["ts"] == initial_ts]
             modification_events = [e for e in open_events if e["ts"] != initial_ts]
 
-            # Contracts currently open: sum opening qty per symbol, take the
-            # max across legs (a correctly-built spread has equal qty on
-            # both legs, so this is robust even if legs were entered in
-            # separate orders at different sizes over time).
             qty_per_symbol = defaultdict(float)
             for e in open_events:
                 qty_per_symbol[e["symbol"]] += e["qty"]
@@ -343,19 +358,11 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                     float(p.get("unrealized_pl", 0) or 0)
                     for p in live_positions if p.get("symbol") in symbols_involved
                 )
-                # Current value = live market value of the whole spread right
-                # now (long leg's value minus short leg's liability — Alpaca
-                # already signs market_value this way), divided into a
-                # per-contract figure comparable to the price it was entered at.
                 current_value_total = sum(
                     float(p.get("market_value", 0) or 0)
                     for p in live_positions if p.get("symbol") in symbols_involved
                 )
                 current_value_per_contract = (current_value_total / (total_qty * 100)) if total_qty else None
-                # Purchase price = what was actually paid at entry, using the
-                # exact same signed-sum pattern but with cost_basis instead
-                # of market_value. Verified against the agent's own logged
-                # math ($1.26/contract net debit) — exact match.
                 entry_value_total = sum(
                     float(p.get("cost_basis", 0) or 0)
                     for p in live_positions if p.get("symbol") in symbols_involved
@@ -364,8 +371,8 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                 pl_word = None
                 status = "open"
             else:
-                outcome = pending_pnl
-                current_value_per_contract = None  # closed trades don't have a "current" value — they're done
+                outcome = at["pending_pnl"]
+                current_value_per_contract = None
                 purchase_price_per_contract = None
                 pl_word = "win" if outcome > 0 else ("loss" if outcome < 0 else "flat")
                 status = "closed"
@@ -387,74 +394,98 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                 "close_events": close_events,
             })
 
-        for e in events:
-            current_events.append(e)
-            symbol, intent, qty, price = e["symbol"], e["intent"], e["qty"], e["price"]
+        from itertools import groupby
+        for ts, batch_iter in groupby(events, key=lambda e: e["ts"]):
+            batch = list(batch_iter)
+            open_events_in_batch = [e for e in batch if e["intent"] in ("buy_to_open", "sell_to_open")]
+            other_events_in_batch = [e for e in batch if e["intent"] not in ("buy_to_open", "sell_to_open")]
 
-            if intent == "expire":
-                # Resolve based on which side this symbol is actually sitting
-                # on right now — not assumed. A long leg expiring worthless
-                # needs sell_to_close (it's worth $0); a short leg expiring
-                # worthless needs buy_to_close (costs $0 to "buy back" — the
-                # full credit is kept). If it's in neither, there's nothing
-                # to close (already flat, or an activity we can't attribute);
-                # skip rather than guess.
-                if long_lots[symbol]:
-                    intent = "sell_to_close"
-                elif short_lots[symbol]:
-                    intent = "buy_to_close"
-                else:
+            # Both legs of ONE order share the same fill timestamp — they
+            # must resolve to the SAME trade together, not each leg
+            # independently deciding "is this a new trade?" (that was the
+            # actual bug: each leg of a fresh 2-leg open was spawning its
+            # own separate single-symbol trade instead of being merged).
+            if open_events_in_batch:
+                target = None
+                for e in open_events_in_batch:
+                    found = find_active_trade_for(e["symbol"])
+                    if found is not None:
+                        target = found
+                        break
+                if target is None:
+                    target = new_active_trade()
+                    active_trades.append(target)
+                for e in open_events_in_batch:
+                    symbol, intent, qty, price = e["symbol"], e["intent"], e["qty"], e["price"]
+                    target["symbols"].add(symbol)
+                    target["events"].append(e)
+                    if intent == "buy_to_open":
+                        target["long_lots"][symbol].append([qty, price])
+                        target["long_remaining"] += qty
+                    else:
+                        target["short_lots"][symbol].append([qty, price])
+                        target["short_remaining"] += qty
+
+            for e in other_events_in_batch:
+                symbol, intent, qty, price = e["symbol"], e["intent"], e["qty"], e["price"]
+                at = find_active_trade_for(symbol)
+
+                if intent == "expire":
+                    if at is None:
+                        continue
+                    if at["long_lots"][symbol]:
+                        intent = "sell_to_close"
+                    elif at["short_lots"][symbol]:
+                        intent = "buy_to_close"
+                    else:
+                        continue
+                    e["intent"] = intent
+
+                if intent not in ("sell_to_close", "buy_to_close"):
                     continue
-                e["intent"] = intent  # so flush() correctly counts this as a close event
+                if at is None:
+                    continue  # closing something never seen opened in this dataset — skip rather than guess
+                at["events"].append(e)
+                if intent == "sell_to_close":
+                    remaining, leg_pnl = qty, 0.0
+                    while remaining > 0 and at["long_lots"][symbol]:
+                        lot_qty, lot_price = at["long_lots"][symbol][0]
+                        matched = min(lot_qty, remaining)
+                        leg_pnl += (price - lot_price) * matched * 100
+                        lot_qty -= matched
+                        remaining -= matched
+                        if lot_qty <= 0:
+                            at["long_lots"][symbol].pop(0)
+                        else:
+                            at["long_lots"][symbol][0][0] = lot_qty
+                    at["pending_pnl"] += leg_pnl
+                    at["long_remaining"] -= qty
+                else:  # buy_to_close
+                    remaining, leg_pnl = qty, 0.0
+                    while remaining > 0 and at["short_lots"][symbol]:
+                        lot_qty, lot_price = at["short_lots"][symbol][0]
+                        matched = min(lot_qty, remaining)
+                        leg_pnl += (lot_price - price) * matched * 100
+                        lot_qty -= matched
+                        remaining -= matched
+                        if lot_qty <= 0:
+                            at["short_lots"][symbol].pop(0)
+                        else:
+                            at["short_lots"][symbol][0][0] = lot_qty
+                    at["pending_pnl"] += leg_pnl
+                    at["short_remaining"] -= qty
 
-            if intent == "buy_to_open":
-                long_lots[symbol].append([qty, price])
-                long_remaining += qty
-            elif intent == "sell_to_open":
-                short_lots[symbol].append([qty, price])
-                short_remaining += qty
-            elif intent == "sell_to_close":
-                remaining, leg_pnl = qty, 0.0
-                while remaining > 0 and long_lots[symbol]:
-                    lot_qty, lot_price = long_lots[symbol][0]
-                    matched = min(lot_qty, remaining)
-                    leg_pnl += (price - lot_price) * matched * 100
-                    lot_qty -= matched
-                    remaining -= matched
-                    if lot_qty <= 0:
-                        long_lots[symbol].pop(0)
-                    else:
-                        long_lots[symbol][0][0] = lot_qty
-                pending_pnl += leg_pnl
-                long_remaining -= qty
-            elif intent == "buy_to_close":
-                remaining, leg_pnl = qty, 0.0
-                while remaining > 0 and short_lots[symbol]:
-                    lot_qty, lot_price = short_lots[symbol][0]
-                    matched = min(lot_qty, remaining)
-                    leg_pnl += (lot_price - price) * matched * 100
-                    lot_qty -= matched
-                    remaining -= matched
-                    if lot_qty <= 0:
-                        short_lots[symbol].pop(0)
-                    else:
-                        short_lots[symbol][0][0] = lot_qty
-                pending_pnl += leg_pnl
-                short_remaining -= qty
+                if at["long_remaining"] <= 0.0001 and at["short_remaining"] <= 0.0001:
+                    flush(at, is_open=False)
+                    active_trades.remove(at)  # done — a future open on these same symbols starts a genuinely new trade
 
-            if intent in ("sell_to_close", "buy_to_close"):
-                if long_remaining <= 0.0001 and short_remaining <= 0.0001:
-                    flush(is_open=False)
-                    current_events = []
-                    pending_pnl = 0.0
-                    long_remaining = 0.0
-                    short_remaining = 0.0
-
-        if current_events:
-            flush(is_open=True)
+        for at in active_trades:
+            if at["events"]:
+                flush(at, is_open=True)
 
     trades.sort(key=lambda t: t["time_opened"], reverse=True)
     return trades
+
 
 
 if not API_KEY or not SECRET_KEY:

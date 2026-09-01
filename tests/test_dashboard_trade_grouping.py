@@ -333,3 +333,66 @@ def test_leg_breakdown_open_trade_uses_live_current_price():
 def test_leg_breakdown_empty_trade_returns_empty_legs():
     result = compute_leg_breakdown({"initial_open_events": [], "modification_events": [], "close_events": [], "status": "open"}, [])
     assert result["legs"] == []
+
+
+def test_concurrent_different_strikes_same_expiry_stay_separate():
+    """
+    Regression test for a real bug: 3 genuinely separate same-day trades
+    on QQQ Sep 3 (707/715, 709/716, 712/720 -- all different strikes)
+    were being merged into ONE trade with 'modifications' because
+    grouping only used underlying+expiration, ignoring strike. This is
+    the exact real order sequence that exposed it.
+    """
+    orders = [
+        {"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T16:03:16", "filled_at": "2026-09-01T16:03:16", "legs": [
+            {"symbol": "QQQ260903C00720000", "position_intent": "sell_to_open", "qty": "10", "filled_avg_price": "0.71"},
+            {"symbol": "QQQ260903C00712000", "position_intent": "buy_to_open", "qty": "10", "filled_avg_price": "3.42"}]},
+        {"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T15:50:50", "filled_at": "2026-09-01T15:50:50", "legs": [
+            {"symbol": "QQQ260903C00707000", "position_intent": "sell_to_close", "qty": "8", "filled_avg_price": "7.06"},
+            {"symbol": "QQQ260903C00715000", "position_intent": "buy_to_close", "qty": "8", "filled_avg_price": "2.36"}]},
+        {"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T14:28:10", "filled_at": "2026-09-01T14:28:10", "legs": [
+            {"symbol": "QQQ260903C00716000", "position_intent": "sell_to_open", "qty": "5", "filled_avg_price": "1"},
+            {"symbol": "QQQ260903C00709000", "position_intent": "buy_to_open", "qty": "5", "filled_avg_price": "3.64"}]},
+        {"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T13:38:21", "filled_at": "2026-09-01T13:38:21", "legs": [
+            {"symbol": "QQQ260903C00715000", "position_intent": "sell_to_open", "qty": "8", "filled_avg_price": "1.09"},
+            {"symbol": "QQQ260903C00707000", "position_intent": "buy_to_open", "qty": "8", "filled_avg_price": "4.26"}]},
+    ]
+    trades = build_trade_records(orders, [], [])
+    assert len(trades) == 3, f"Expected 3 distinct trades, got {len(trades)}"
+
+    closed = [t for t in trades if t["status"] == "closed"]
+    open_t = [t for t in trades if t["status"] == "open"]
+    assert len(closed) == 1
+    assert len(open_t) == 2
+    assert abs(closed[0]["outcome"] - 1224.0) < 1.0
+
+
+def test_single_order_both_legs_merge_into_one_new_trade():
+    """
+    Regression test for a bug introduced while fixing the above: each
+    leg of a freshly-opened 2-leg order was spawning its OWN separate
+    single-symbol trade instead of both legs merging into one, because
+    each leg independently checked 'does an existing trade already have
+    me?' before either leg of the same order had been registered yet.
+    """
+    orders = [
+        {"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T10:00:00", "filled_at": "2026-09-01T10:00:00", "legs": [
+            {"symbol": "SPY260904C00775000", "position_intent": "sell_to_open", "qty": "10", "filled_avg_price": "1.00"},
+            {"symbol": "SPY260904C00770000", "position_intent": "buy_to_open", "qty": "10", "filled_avg_price": "2.00"}]},
+    ]
+    trades = build_trade_records(orders, [], [])
+    assert len(trades) == 1, f"Both legs of one order must merge into ONE trade, got {len(trades)}"
+    assert trades[0]["class"] == "multi"
+
+
+def test_real_modification_still_merges_correctly_with_batched_opens():
+    """
+    Full regression against the original real QQQ 716/720 trade (2 open
+    orders genuinely adding to the same position, 2 separate closes) --
+    must still produce exactly 1 trade after the batching fix, not be
+    broken by it.
+    """
+    trades = build_trade_records(REAL_QQQ_ORDERS, [], [])
+    assert len(trades) == 1
+    assert trades[0]["status"] == "closed"
+    assert abs(trades[0]["outcome"] - (-2480.0)) < 0.01
