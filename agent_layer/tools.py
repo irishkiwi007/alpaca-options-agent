@@ -139,6 +139,23 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_sp500_batch",
+        "description": (
+            "Returns a batch of real S&P 500 tickers to check, rotating through the full index over "
+            "successive calls so you get systematic coverage over time — not just whatever happens to "
+            "show up in volume/movers screeners, which skew heavily toward penny stocks and rarely "
+            "surface genuine large-caps at all. Each call returns the NEXT batch in rotation, continuing "
+            "from wherever the last call left off (state persists across cycles). Use this periodically "
+            "to genuinely broaden what you're evaluating, not only SPY/QQQ or whatever movers surfaced."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "batch_size": {"type": "integer", "description": "How many tickers to return, default 15"},
+            },
+        },
+    },
+    {
         "name": "get_recent_activity_log",
         "description": "Read recent logged events from this agent's own history — past trades, reasoning, and outcomes — to inform self-assessment and strategy adjustment.",
         "input_schema": {
@@ -196,6 +213,8 @@ class ToolDispatcher:
                 return await self._get_most_active_stocks(tool_input.get("by", "volume"), tool_input.get("top", 10))
             elif tool_name == "get_market_movers":
                 return await self._get_market_movers(tool_input.get("top", 10))
+            elif tool_name == "get_sp500_batch":
+                return self._get_sp500_batch(tool_input.get("batch_size", 15))
             elif tool_name == "place_spread_order":
                 return await self._place_spread_order(tool_input)
             elif tool_name == "close_position":
@@ -298,6 +317,20 @@ class ToolDispatcher:
                 f"Filtered out {removed} symbols under ${MIN_PRICE:.0f} or that look like warrants/units/rights "
                 "(speculative penny-stock moves that dominate raw % gainers/losers data and essentially never "
                 "have liquid options markets)."
+            ),
+        })
+
+    def _get_sp500_batch(self, batch_size: int) -> str:
+        from config.sp500_tickers import SP500_TICKERS
+        from config.sp500_rotation import get_next_batch
+        batch = get_next_batch(SP500_TICKERS, batch_size)
+        return json.dumps({
+            "tickers": batch,
+            "note": (
+                f"Batch of {len(batch)} from the S&P 500, rotating — the next call continues from here "
+                "rather than repeating this same batch. These are genuine index constituents, not "
+                "screener output, so no further liquidity filtering has been applied here; check "
+                "get_option_chain for any name you're seriously considering."
             ),
         })
 

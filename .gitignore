@@ -6,6 +6,8 @@ venv/
 *.log
 .DS_Store
 config/dynamic_overrides.json
+config/sp500_rotation_state.json
+logs/*.jsonl
 .pytest_cache/
 OPERATOR_NOTE
 TOOLING_ISSUES.md
