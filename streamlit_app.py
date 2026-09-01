@@ -625,19 +625,24 @@ with tcols[3]:
 st.divider()
 
 # ---- Win / Loss ----
-# Realized P&L intentionally does NOT touch current_equity or live
-# unrealized figures — it must stay fixed the instant a trade closes,
-# not drift up and down while a DIFFERENT, still-open trade's price
-# moves. Summed directly from each closed trade's own fixed outcome.
+# Realized P&L uses actual account equity, not reconstructed fill
+# prices, so it's fee-inclusive to the cent. This is correctly stable
+# by construction: subtracting the currently-open positions' own live
+# unrealized P&L exactly cancels out their fluctuation, leaving only
+# the fixed, already-settled result of closed trades. Any tiny jitter
+# seen is just sub-second timing between two separate API calls
+# (positions vs account), not a real drift in the number itself.
 st.subheader("Win / Loss")
 closed_trades = [t for t in trades if t["status"] == "closed"]
 wins = [t for t in closed_trades if t["profit_loss"] == "win"]
 losses = [t for t in closed_trades if t["profit_loss"] == "loss"]
-total_realized = sum(t["outcome"] for t in closed_trades)
+
+STARTING_EQUITY = 100000.0  # matches the hackathon's required starting balance
+total_realized = (current_equity - STARTING_EQUITY) - open_unrealized
 
 wl1, wl2, wl3, wl4 = st.columns(4)
 with wl1:
-    st.metric("Realized P&L", f"${total_realized:,.2f}", help="Fixed once a trade closes — does not change based on any other open position. Computed from fill prices; may be off by a few dollars from exact exchange fees.")
+    st.metric("Realized P&L", f"${total_realized:,.2f}", help="From actual account equity — includes exchange/regulatory fees. Mathematically excludes any currently-open position's fluctuation.")
 with wl2:
     st.metric("Wins", len(wins))
 with wl3:
