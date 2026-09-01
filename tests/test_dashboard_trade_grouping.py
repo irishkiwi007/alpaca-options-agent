@@ -274,3 +274,62 @@ def test_parse_occ_symbol_real_put():
 def test_parse_occ_symbol_handles_garbage_input():
     result = parse_occ_symbol("not_a_real_symbol")
     assert result["type"] == "—"
+
+
+def _load_leg_breakdown():
+    with open(os.path.join(os.path.dirname(__file__), "..", "streamlit_app.py")) as f:
+        source = f.read()
+    tree = ast.parse(source)
+    namespace = {"defaultdict": __import__("collections").defaultdict}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in ("parse_occ_symbol", "compute_leg_breakdown"):
+            exec(ast.get_source_segment(source, node), namespace)
+    return namespace["compute_leg_breakdown"]
+
+
+compute_leg_breakdown = _load_leg_breakdown()
+
+
+def test_leg_breakdown_matches_real_closed_trade_math():
+    """Verified against the real QQQ 716/720 trade's actual blended fill prices."""
+    trades = build_trade_records(REAL_QQQ_ORDERS, [], [])
+    t = trades[0]
+    breakdown = compute_leg_breakdown(t, [])
+    long_leg = [l for l in breakdown["legs"] if l["side"] == "Long"][0]
+    short_leg = [l for l in breakdown["legs"] if l["side"] == "Short"][0]
+
+    # Long 716C: blended purchase (40@3.57 + 40@2.55)/80 = 3.06, exit 2.32
+    assert abs(long_leg["purchase_price"] - 3.06) < 0.01
+    assert abs(long_leg["current_or_exit_price"] - 2.32) < 0.01
+    assert abs(long_leg["profit_per_contract"] - (-0.74)) < 0.01
+
+    # Short 720C: blended purchase (40@1.81 + 40@1.17)/80 = 1.49, exit 1.06
+    assert abs(short_leg["purchase_price"] - 1.49) < 0.01
+    assert abs(short_leg["current_or_exit_price"] - 1.06) < 0.01
+    assert abs(short_leg["profit_per_contract"] - 0.43) < 0.01
+
+    # Grand profit (x100 multiplier) must match the known real fill-based total: -$2,480
+    assert abs(breakdown["grand_profit"] * 100 - (-2480.0)) < 0.5
+
+
+def test_leg_breakdown_open_trade_uses_live_current_price():
+    orders = [{"status": "filled", "filled_at": "2026-08-31T19:55:50", "order_class": "mleg", "legs": [
+        {"symbol": "QQQ260901C00720000", "position_intent": "sell_to_open", "side": "sell", "qty": "20", "filled_avg_price": "0.97"},
+        {"symbol": "QQQ260901C00717000", "position_intent": "buy_to_open", "side": "buy", "qty": "20", "filled_avg_price": "2.23"}]}]
+    live_positions = [
+        {"symbol": "QQQ260901C00717000", "current_price": "2.19"},
+        {"symbol": "QQQ260901C00720000", "current_price": "0.95"},
+    ]
+    trades = build_trade_records(orders, live_positions, [])
+    breakdown = compute_leg_breakdown(trades[0], live_positions)
+    long_leg = [l for l in breakdown["legs"] if l["side"] == "Long"][0]
+    short_leg = [l for l in breakdown["legs"] if l["side"] == "Short"][0]
+    assert abs(long_leg["current_or_exit_price"] - 2.19) < 0.01
+    assert abs(short_leg["current_or_exit_price"] - 0.95) < 0.01
+    assert abs(long_leg["profit_per_contract"] - (-0.04)) < 0.01
+    assert abs(short_leg["profit_per_contract"] - 0.02) < 0.01
+
+
+def test_leg_breakdown_empty_trade_returns_empty_legs():
+    result = compute_leg_breakdown({"initial_open_events": [], "modification_events": [], "close_events": [], "status": "open"}, [])
+    assert result["legs"] == []

@@ -129,6 +129,91 @@ def parse_occ_symbol(symbol: str) -> dict:
     }
 
 
+def compute_leg_breakdown(trade: dict, live_positions: list) -> dict:
+    """
+    Per-leg purchase/current-or-exit/profit breakdown, per contract and
+    per-leg totals, plus a grand total row across all legs of the trade.
+
+    Purchase price per leg = qty-weighted average of that leg's opening
+    fill prices (handles a leg built across multiple opening orders).
+    Current/exit price per leg = live current_price (open trades, from
+    the live position) or qty-weighted average of closing fill prices
+    (closed trades, including any synthesized $0 expiration events).
+    Profit per contract respects long vs short: a long leg profits when
+    price rises, a short leg profits when price falls (bought back
+    cheaper than the credit received).
+
+    Per-leg totals are qty × price (no ×100 multiplier) to match a
+    plain "cost of N contracts at $X each" reading. The grand total row
+    additionally nets long cost against short credit (the same signed
+    convention already used for entry/current spread value elsewhere in
+    the app), since summing both legs' raw totals unsigned would double
+    count rather than net them.
+    """
+    all_events = trade["initial_open_events"] + trade["modification_events"] + trade["close_events"]
+    symbols = sorted(set(e["symbol"] for e in all_events))
+
+    legs = []
+    for symbol in symbols:
+        opens = [e for e in (trade["initial_open_events"] + trade["modification_events"]) if e["symbol"] == symbol]
+        closes = [e for e in trade["close_events"] if e["symbol"] == symbol]
+        if not opens:
+            continue
+
+        is_long = opens[0]["intent"] == "buy_to_open"
+        qty = sum(e["qty"] for e in opens)
+        purchase_price = sum(e["qty"] * e["price"] for e in opens) / qty if qty else 0.0
+
+        current_or_exit_price = None
+        if closes:
+            close_qty = sum(e["qty"] for e in closes)
+            current_or_exit_price = sum(e["qty"] * e["price"] for e in closes) / close_qty if close_qty else None
+        elif trade["status"] == "open":
+            live = next((p for p in live_positions if p.get("symbol") == symbol), None)
+            if live is not None:
+                current_or_exit_price = float(live.get("current_price", 0) or 0)
+
+        if current_or_exit_price is None:
+            profit_per_contract = None
+        else:
+            profit_per_contract = (current_or_exit_price - purchase_price) if is_long else (purchase_price - current_or_exit_price)
+
+        occ = parse_occ_symbol(symbol)
+        legs.append({
+            "symbol": symbol,
+            "type": occ["type"],
+            "strike": occ["strike"],
+            "expiry": occ["expiry"],
+            "side": "Long" if is_long else "Short",
+            "qty": qty,
+            "purchase_price": purchase_price,
+            "current_or_exit_price": current_or_exit_price,
+            "profit_per_contract": profit_per_contract,
+            "leg_total_purchase": qty * purchase_price,
+            "leg_total_current": (qty * current_or_exit_price) if current_or_exit_price is not None else None,
+            "leg_total_profit": (qty * profit_per_contract) if profit_per_contract is not None else None,
+        })
+
+    # Grand total: net long cost against short credit, matching the
+    # signed convention already used for spread entry/current value
+    # elsewhere in the app — NOT a naive unsigned sum of both legs.
+    grand_purchase = sum(
+        (l["leg_total_purchase"] if l["side"] == "Long" else -l["leg_total_purchase"]) for l in legs
+    )
+    have_all_current = all(l["leg_total_current"] is not None for l in legs) and legs
+    grand_current = sum(
+        (l["leg_total_current"] if l["side"] == "Long" else -l["leg_total_current"]) for l in legs
+    ) if have_all_current else None
+    grand_profit = sum(l["leg_total_profit"] for l in legs if l["leg_total_profit"] is not None) if legs else 0.0
+
+    return {
+        "legs": legs,
+        "grand_purchase": grand_purchase,
+        "grand_current": grand_current,
+        "grand_profit": grand_profit,
+    }
+
+
 def format_nyc(iso_ts: str) -> str:
     """Converts any ISO timestamp (assumed UTC if no offset given) to
     'dd mm yyyy HH:MM:SS' in America/New_York time."""
@@ -552,6 +637,36 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info(f"No bar data available for {trade['underlying']} in this window.")
+
+    st.divider()
+
+    # ---- Per-leg purchase / current-or-exit / profit breakdown ----
+    st.subheader("Per-Leg Breakdown")
+    breakdown = compute_leg_breakdown(trade, positions)
+    if breakdown["legs"]:
+        leg_rows = [{
+            "Type": l["type"],
+            "Strike": l["strike"],
+            "Expiry": l["expiry"],
+            "Side": l["side"],
+            "Contracts": l["qty"],
+            "Purchase $": f"${l['purchase_price']:.2f}",
+            ("Exit $" if trade["status"] == "closed" else "Current $"): (f"${l['current_or_exit_price']:.2f}" if l["current_or_exit_price"] is not None else "—"),
+            "P/L per Ctr": f"${l['profit_per_contract']:.2f}" if l["profit_per_contract"] is not None else "—",
+            "Leg Total P/L": f"${l['leg_total_profit']:.2f}" if l["leg_total_profit"] is not None else "—",
+        } for l in breakdown["legs"]]
+        st.dataframe(leg_rows, use_container_width=True, hide_index=True)
+
+        gc1, gc2, gc3 = st.columns(3)
+        with gc1:
+            st.metric("Total Purchase", f"${breakdown['grand_purchase']:.2f}")
+        with gc2:
+            st.metric("Total Current/Exit", f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—")
+        with gc3:
+            st.metric("Total P/L (all legs)", f"${breakdown['grand_profit']:.2f}")
+        st.caption("Purchase/Current/Total figures here are per-contract price × contract count (not the full ×100 options multiplier used elsewhere in this app).")
+    else:
+        st.caption("No leg data available for this trade.")
 
     st.divider()
 
