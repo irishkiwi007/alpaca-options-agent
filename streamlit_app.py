@@ -80,6 +80,33 @@ def root_symbol_from_group(gkey: str) -> str:
     return gkey[:-6] if len(gkey) > 6 else gkey
 
 
+def parse_occ_symbol(symbol: str) -> dict:
+    """Parses an OCC option symbol into its real components: underlying,
+    expiry, put/call, strike — for display on the leg detail tables,
+    rather than just showing the raw unreadable symbol string."""
+    if not symbol or len(symbol) < 16:
+        return {"underlying": symbol or "—", "expiry": "—", "type": "—", "strike": "—"}
+    underlying = symbol[:-15]
+    date_code = symbol[-15:-9]  # YYMMDD
+    opt_type = symbol[-9]
+    strike_raw = symbol[-8:]
+    try:
+        yy, mm, dd = date_code[0:2], date_code[2:4], date_code[4:6]
+        expiry = f"{dd} {mm} 20{yy}"
+    except Exception:
+        expiry = "—"
+    try:
+        strike = f"${int(strike_raw) / 1000:.2f}"
+    except Exception:
+        strike = "—"
+    return {
+        "underlying": underlying,
+        "expiry": expiry,
+        "type": "Call" if opt_type == "C" else ("Put" if opt_type == "P" else "—"),
+        "strike": strike,
+    }
+
+
 def format_nyc(iso_ts: str) -> str:
     """Converts any ISO timestamp (assumed UTC if no offset given) to
     'dd mm yyyy HH:MM:SS' in America/New_York time."""
@@ -195,15 +222,34 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
             initial_open_events = [e for e in open_events if e["ts"] == initial_ts]
             modification_events = [e for e in open_events if e["ts"] != initial_ts]
 
+            # Contracts currently open: sum opening qty per symbol, take the
+            # max across legs (a correctly-built spread has equal qty on
+            # both legs, so this is robust even if legs were entered in
+            # separate orders at different sizes over time).
+            qty_per_symbol = defaultdict(float)
+            for e in open_events:
+                qty_per_symbol[e["symbol"]] += e["qty"]
+            total_qty = max(qty_per_symbol.values()) if qty_per_symbol else 0
+
             if is_open:
                 outcome = sum(
                     float(p.get("unrealized_pl", 0) or 0)
                     for p in live_positions if p.get("symbol") in symbols_involved
                 )
+                # Current value = live market value of the whole spread right
+                # now (long leg's value minus short leg's liability — Alpaca
+                # already signs market_value this way), divided into a
+                # per-contract figure comparable to the price it was entered at.
+                current_value_total = sum(
+                    float(p.get("market_value", 0) or 0)
+                    for p in live_positions if p.get("symbol") in symbols_involved
+                )
+                current_value_per_contract = (current_value_total / (total_qty * 100)) if total_qty else None
                 pl_word = None
                 status = "open"
             else:
                 outcome = pending_pnl
+                current_value_per_contract = None  # closed trades don't have a "current" value — they're done
                 pl_word = "win" if outcome > 0 else ("loss" if outcome < 0 else "flat")
                 status = "closed"
 
@@ -214,6 +260,8 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                 "time_closed": time_closed,
                 "class": trade_class,
                 "status": status,
+                "qty": total_qty,
+                "current_value_per_contract": current_value_per_contract,
                 "outcome": outcome,
                 "profit_loss": pl_word,
                 "initial_open_events": initial_open_events,
@@ -323,15 +371,20 @@ def render_leg_table(events, empty_msg):
     if not events:
         st.caption(empty_msg)
         return
-    rows = [{
-        "Time (NYC)": format_nyc(e["ts"]),
-        "Symbol": e["symbol"],
-        "Side": e.get("side") or "—",
-        "Intent": e["intent"],
-        "Qty": e["qty"],
-        "Fill Price": f"${e['price']:.2f}",
-        "Source": "Expired worthless" if e.get("source") == "expiration" else "Order fill",
-    } for e in events]
+    rows = []
+    for e in events:
+        occ = parse_occ_symbol(e["symbol"])
+        rows.append({
+            "Time (NYC)": format_nyc(e["ts"]),
+            "Type": occ["type"],
+            "Strike": occ["strike"],
+            "Expiry": occ["expiry"],
+            "Side": e.get("side") or "—",
+            "Intent": e["intent"],
+            "Qty": e["qty"],
+            "Fill Price": f"${e['price']:.2f}",
+            "Source": "Expired worthless" if e.get("source") == "expiration" else "Order fill",
+        })
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
@@ -379,15 +432,21 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
     st.title(f"Trade Detail — {trade['underlying']}")
     st.caption(f"Group: {trade['group_key']} · Status: {trade['status']}")
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("Class", trade["class"])
     with c2:
         st.metric("Status", trade["status"])
     with c3:
-        st.metric("Outcome", f"${trade['outcome']:,.2f}")
+        st.metric("Qty", trade["qty"])
     with c4:
-        st.metric("Result", trade["profit_loss"].upper() if trade["profit_loss"] else "—")
+        st.metric("Outcome", f"${trade['outcome']:,.2f}")
+    with c5:
+        result_label = trade["profit_loss"].upper() if trade["profit_loss"] else ("OPEN" if trade["status"] == "open" else "—")
+        st.metric("Result", result_label)
+
+    if trade["current_value_per_contract"] is not None:
+        st.caption(f"Current value: ${trade['current_value_per_contract']:.2f}/contract")
 
     st.caption(f"Opened: {format_nyc(trade['time_opened'])} NYC" + (f" · Closed: {format_nyc(trade['time_closed'])} NYC" if trade["time_closed"] else " · Still open"))
 
@@ -399,16 +458,39 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
     )
 
     # ---- Price chart around entry ----
-    st.subheader(f"Market Context at Entry — {trade['underlying']}")
+    st.subheader(f"Market Context — {trade['underlying']}")
     try:
         entry_dt = datetime.fromisoformat(trade["time_opened"].replace("Z", "+00:00"))
     except Exception:
         entry_dt = datetime.now(timezone.utc)
 
-    start = (entry_dt - timedelta(hours=3)).isoformat()
-    end = (entry_dt + timedelta(hours=3)).isoformat()
+    exit_dt = None
+    if trade["time_closed"]:
+        try:
+            exit_dt = datetime.fromisoformat(trade["time_closed"].replace("Z", "+00:00"))
+        except Exception:
+            exit_dt = None
+
+    span_end = exit_dt or datetime.now(timezone.utc)
+    span = span_end - entry_dt
+
+    # Padding scales with how long the trade was actually open, so a quick
+    # same-day trade gets a tight, readable window and a multi-day trade
+    # doesn't get compressed into an unreadable sliver.
+    padding = max(timedelta(minutes=30), span * 0.15)
+    padding = min(padding, timedelta(hours=6))
+
+    if span <= timedelta(hours=6):
+        bar_timeframe = "5Min"
+    elif span <= timedelta(days=2):
+        bar_timeframe = "15Min"
+    else:
+        bar_timeframe = "1Hour"
+
+    start = (entry_dt - padding).isoformat()
+    end = (span_end + padding).isoformat()
     bars_resp = fetch(DATA_URL, f"/v2/stocks/{trade['underlying']}/bars", {
-        "timeframe": "5Min", "start": start, "end": end, "limit": 200,
+        "timeframe": bar_timeframe, "start": start, "end": end, "limit": 300,
     })
     bars = bars_resp.get("bars", []) if isinstance(bars_resp, dict) else []
 
@@ -422,7 +504,10 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             increasing_line_color="#22D3A8", decreasing_line_color="#EF4444",
         )])
         fig.add_vline(x=entry_dt.isoformat(), line_dash="dash", line_color="#F59E0B",
-                       annotation_text="Trade opened", annotation_font_color="#F59E0B")
+                       annotation_text="Entry", annotation_font_color="#F59E0B")
+        if exit_dt:
+            fig.add_vline(x=exit_dt.isoformat(), line_dash="dash", line_color="#0EA5E9",
+                           annotation_text="Exit", annotation_font_color="#0EA5E9")
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#0A0E17", plot_bgcolor="#0A0E17",
             height=450, margin=dict(l=10, r=10, t=30, b=10),
@@ -525,16 +610,29 @@ st.divider()
 
 # ---- Open positions ----
 st.subheader("Open Positions")
-if positions:
+open_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "open"]
+
+if open_trades_indexed:
     rows = [{
-        "Symbol": p.get("symbol"),
-        "Side": p.get("side"),
-        "Qty": p.get("qty"),
-        "Avg Entry": f"${float(p.get('avg_entry_price', 0)):.2f}",
-        "Cost Basis": f"${abs(float(p.get('cost_basis', 0))):.2f}",
-        "Unrealized P/L": f"${float(p.get('unrealized_pl', 0)):.2f}",
-    } for p in positions]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+        "Underlying": t["underlying"],
+        "Entered (NYC)": format_nyc(t["time_opened"]),
+        "Class": t["class"],
+        "Qty": t["qty"],
+        "Current Value / Contract": f"${t['current_value_per_contract']:.2f}" if t["current_value_per_contract"] is not None else "—",
+        "Profit/Loss": f"${t['outcome']:,.2f}",
+    } for _, t in open_trades_indexed]
+
+    event = st.dataframe(
+        rows, use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="open_positions_table",
+    )
+    selected_rows = event.selection.rows if hasattr(event, "selection") else []
+    if selected_rows:
+        position_in_filtered_list = selected_rows[0]
+        original_idx, selected_trade = open_trades_indexed[position_in_filtered_list]
+        st.write(f"Selected: **{selected_trade['underlying']}** — opened {rows[position_in_filtered_list]['Entered (NYC)']}")
+        if st.button("🔍 View trade detail & chart", type="primary", key="open_position_detail_btn"):
+            go_to_detail(original_idx)
 else:
     st.info("No open positions right now.")
 

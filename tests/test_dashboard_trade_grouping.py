@@ -105,6 +105,40 @@ def test_open_trade_not_shown_as_closed_without_matching_expiry():
     assert len(trades) == 1
     assert trades[0]["status"] == "open"
 
+
+def test_open_trade_qty_and_current_value_match_real_agent_math():
+    """
+    Verified against the real QQQ 717/720 position's own hand-computed
+    math from the agent's live reasoning log: 20 contracts, current net
+    value ~$1.24/contract (long $2.19 - short $0.95).
+    """
+    orders = [{"status": "filled", "filled_at": "2026-08-31T19:55:50", "order_class": "mleg", "legs": [
+        {"symbol": "QQQ260901C00720000", "position_intent": "sell_to_open", "side": "sell", "qty": "20", "filled_avg_price": "0.97"},
+        {"symbol": "QQQ260901C00717000", "position_intent": "buy_to_open", "side": "buy", "qty": "20", "filled_avg_price": "2.23"}]}]
+    live_positions = [
+        {"symbol": "QQQ260901C00717000", "unrealized_pl": "-8.0", "market_value": "4380.0"},
+        {"symbol": "QQQ260901C00720000", "unrealized_pl": "40.0", "market_value": "-1900.0"},
+    ]
+    trades = build_trade_records(orders, live_positions, [])
+    t = trades[0]
+    assert t["qty"] == 20
+    assert abs(t["current_value_per_contract"] - 1.24) < 0.01
+
+
+def test_closed_trade_has_no_current_value():
+    """A closed trade is done — 'current value' isn't a meaningful concept for it, should be None not a stale number."""
+    trades = build_trade_records(REAL_QQQ_ORDERS, [], [])
+    closed = [t for t in trades if t["status"] == "closed"]
+    assert len(closed) == 1
+    assert closed[0]["current_value_per_contract"] is None
+
+
+def test_qty_correct_across_multiple_open_orders():
+    """The real QQQ 716/720 trade opened in two 40-contract tranches -- qty must be 80, not 40."""
+    trades = build_trade_records(REAL_QQQ_ORDERS, [], [])
+    closed = [t for t in trades if t["status"] == "closed"]
+    assert closed[0]["qty"] == 80
+
 REAL_QQQ_ORDERS = [
     {"status": "filled", "filled_at": "2026-08-31T16:01:12", "order_class": "simple", "legs": None,
      "symbol": "QQQ260902C00716000", "position_intent": "sell_to_close", "side": "sell", "qty": "80", "filled_avg_price": "2.32"},
@@ -207,3 +241,36 @@ def test_two_sequential_trades_same_underlying_stay_separate():
 
 def test_no_orders_returns_empty():
     assert build_trade_records([], []) == []
+
+
+def _load_parse_occ():
+    with open(os.path.join(os.path.dirname(__file__), "..", "streamlit_app.py")) as f:
+        source = f.read()
+    tree = ast.parse(source)
+    namespace = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "parse_occ_symbol":
+            exec(ast.get_source_segment(source, node), namespace)
+    return namespace["parse_occ_symbol"]
+
+
+parse_occ_symbol = _load_parse_occ()
+
+
+def test_parse_occ_symbol_real_call():
+    result = parse_occ_symbol("QQQ260902C00716000")
+    assert result["underlying"] == "QQQ"
+    assert result["type"] == "Call"
+    assert result["strike"] == "$716.00"
+    assert result["expiry"] == "02 09 2026"
+
+
+def test_parse_occ_symbol_real_put():
+    result = parse_occ_symbol("SPY260904P00440000")
+    assert result["type"] == "Put"
+    assert result["strike"] == "$440.00"
+
+
+def test_parse_occ_symbol_handles_garbage_input():
+    result = parse_occ_symbol("not_a_real_symbol")
+    assert result["type"] == "—"
