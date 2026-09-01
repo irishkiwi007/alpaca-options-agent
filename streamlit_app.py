@@ -35,6 +35,28 @@ st.markdown("""
     .stApp { background-color: #0A0E17; }
     h1, h2, h3, p, span, div, label { color: #F9FAFB; }
     .stDataFrame { background-color: #1F2937; }
+
+    /* Streamlit's default metric font is oversized for mobile — was
+    causing excessive scrolling on phones. */
+    [data-testid="stMetricValue"] { font-size: 1.3rem; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem; }
+    [data-testid="stMetricDelta"] { font-size: 0.75rem; }
+
+    h1 { font-size: 1.6rem !important; }
+    h2 { font-size: 1.3rem !important; }
+    h3 { font-size: 1.1rem !important; }
+
+    .stDataFrame { font-size: 0.85rem; }
+
+    @media (max-width: 600px) {
+        [data-testid="stMetricValue"] { font-size: 1.05rem; }
+        [data-testid="stMetricLabel"] { font-size: 0.7rem; }
+        h1 { font-size: 1.35rem !important; }
+        h2 { font-size: 1.1rem !important; }
+        h3 { font-size: 0.95rem !important; }
+        .stDataFrame { font-size: 0.75rem; }
+        p, span, div, label { font-size: 0.85rem; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -245,11 +267,21 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                     for p in live_positions if p.get("symbol") in symbols_involved
                 )
                 current_value_per_contract = (current_value_total / (total_qty * 100)) if total_qty else None
+                # Purchase price = what was actually paid at entry, using the
+                # exact same signed-sum pattern but with cost_basis instead
+                # of market_value. Verified against the agent's own logged
+                # math ($1.26/contract net debit) — exact match.
+                entry_value_total = sum(
+                    float(p.get("cost_basis", 0) or 0)
+                    for p in live_positions if p.get("symbol") in symbols_involved
+                )
+                purchase_price_per_contract = (entry_value_total / (total_qty * 100)) if total_qty else None
                 pl_word = None
                 status = "open"
             else:
                 outcome = pending_pnl
                 current_value_per_contract = None  # closed trades don't have a "current" value — they're done
+                purchase_price_per_contract = None
                 pl_word = "win" if outcome > 0 else ("loss" if outcome < 0 else "flat")
                 status = "closed"
 
@@ -262,6 +294,7 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                 "status": status,
                 "qty": total_qty,
                 "current_value_per_contract": current_value_per_contract,
+                "purchase_price_per_contract": purchase_price_per_contract,
                 "outcome": outcome,
                 "profit_loss": pl_word,
                 "initial_open_events": initial_open_events,
@@ -446,7 +479,10 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         st.metric("Result", result_label)
 
     if trade["current_value_per_contract"] is not None:
-        st.caption(f"Current value: ${trade['current_value_per_contract']:.2f}/contract")
+        value_line = f"Current value: ${trade['current_value_per_contract']:.2f}/contract"
+        if trade.get("purchase_price_per_contract") is not None:
+            value_line = f"Entry: ${trade['purchase_price_per_contract']:.2f}/contract → " + value_line
+        st.caption(value_line)
 
     st.caption(f"Opened: {format_nyc(trade['time_opened'])} NYC" + (f" · Closed: {format_nyc(trade['time_closed'])} NYC" if trade["time_closed"] else " · Still open"))
 
@@ -545,56 +581,63 @@ st.caption("An autonomous AI trading agent, built on Alpaca — live paper accou
 funds_committed = abs(sum(float(p.get("cost_basis", 0) or 0) for p in positions))
 current_equity = float(account.get("equity", 0))
 cash_available = current_equity - funds_committed
+open_unrealized = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
-with col1:
+# Mobile-friendly: 4 + 3 instead of 7 across one row, which was forcing
+# heavy horizontal squeeze/scroll on phone screens.
+row1 = st.columns(4)
+with row1[0]:
     st.metric("Equity", f"${current_equity:,.2f}", help="Total account value, including the current market value of open positions.")
-with col2:
+with row1[1]:
     st.metric("Cash Available", f"${cash_available:,.2f}", help="Equity minus capital currently committed to open positions.")
-with col3:
+with row1[2]:
     st.metric("Buying Power", f"${float(account.get('buying_power', 0)):,.2f}")
-with col4:
-    st.metric("Funds Committed", f"${funds_committed:,.2f}", help="Net cost basis of open positions (long minus short).")
-with col5:
+with row1[3]:
+    st.metric("Funds Committed", f"${funds_committed:,.2f}", help="How much was actually paid into currently open positions (net cost basis).")
+
+row2 = st.columns(3)
+with row2[0]:
+    st.metric("Unrealized P&L", f"${open_unrealized:,.2f}", help="Live floating gain/loss on currently open positions — changes constantly while a position is open.")
+with row2[1]:
     st.metric("Options Level", account.get("options_trading_level", "—"))
-with col6:
+with row2[2]:
     st.metric("Status", account.get("status", "—"))
 
 st.divider()
 
-# ---- Order status breakdown ----
-st.subheader("Order Status Breakdown")
-status_counts = defaultdict(int)
-for o in all_orders:
-    status_counts[o.get("status", "unknown")] += 1
+# ---- Trades summary (open/closed at the TRADE level, not raw order status) ----
+st.subheader("Trades Summary")
+open_trade_count = len([t for t in trades if t["status"] == "open"])
+closed_trade_count = len([t for t in trades if t["status"] == "closed"])
+cancelled_order_count = sum(1 for o in all_orders if o.get("status") in ("canceled", "expired"))
+rejected_order_count = sum(1 for o in all_orders if o.get("status") == "rejected")
 
-STATUS_GROUPS = {
-    "Filled": ["filled"],
-    "Open / Pending": ["new", "accepted", "pending_new", "accepted_for_bidding", "held", "partially_filled"],
-    "Cancelled": ["canceled", "expired"],
-    "Rejected": ["rejected"],
-}
-bcols = st.columns(len(STATUS_GROUPS))
-for i, (label, keys) in enumerate(STATUS_GROUPS.items()):
-    count = sum(status_counts.get(k, 0) for k in keys)
-    with bcols[i]:
-        st.metric(label, count)
+tcols = st.columns(4)
+with tcols[0]:
+    st.metric("Open Trades", open_trade_count)
+with tcols[1]:
+    st.metric("Closed Trades", closed_trade_count)
+with tcols[2]:
+    st.metric("Cancelled Orders", cancelled_order_count)
+with tcols[3]:
+    st.metric("Rejected Orders", rejected_order_count)
 
 st.divider()
 
 # ---- Win / Loss ----
+# Realized P&L intentionally does NOT touch current_equity or live
+# unrealized figures — it must stay fixed the instant a trade closes,
+# not drift up and down while a DIFFERENT, still-open trade's price
+# moves. Summed directly from each closed trade's own fixed outcome.
 st.subheader("Win / Loss")
 closed_trades = [t for t in trades if t["status"] == "closed"]
 wins = [t for t in closed_trades if t["profit_loss"] == "win"]
 losses = [t for t in closed_trades if t["profit_loss"] == "loss"]
-
-starting_equity = 100000.0  # matches the hackathon's required starting balance
-open_unrealized = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
-total_realized = (current_equity - starting_equity) - open_unrealized
+total_realized = sum(t["outcome"] for t in closed_trades)
 
 wl1, wl2, wl3, wl4 = st.columns(4)
 with wl1:
-    st.metric("Realized P&L", f"${total_realized:,.2f}", help="From actual account equity — includes exchange/regulatory fees, not just fill prices.")
+    st.metric("Realized P&L", f"${total_realized:,.2f}", help="Fixed once a trade closes — does not change based on any other open position. Computed from fill prices; may be off by a few dollars from exact exchange fees.")
 with wl2:
     st.metric("Wins", len(wins))
 with wl3:
@@ -618,13 +661,18 @@ if open_trades_indexed:
         "Entered (NYC)": format_nyc(t["time_opened"]),
         "Class": t["class"],
         "Qty": t["qty"],
-        "Current Value / Contract": f"${t['current_value_per_contract']:.2f}" if t["current_value_per_contract"] is not None else "—",
-        "Profit/Loss": f"${t['outcome']:,.2f}",
+        "Entry $/Ctr": f"${t['purchase_price_per_contract']:.2f}" if t["purchase_price_per_contract"] is not None else "—",
+        "Now $/Ctr": f"${t['current_value_per_contract']:.2f}" if t["current_value_per_contract"] is not None else "—",
+        "Unrealized P/L": f"${t['outcome']:,.2f}",
     } for _, t in open_trades_indexed]
 
     event = st.dataframe(
         rows, use_container_width=True, hide_index=True,
         on_select="rerun", selection_mode="single-row", key="open_positions_table",
+        column_config={
+            "Entry $/Ctr": st.column_config.TextColumn(width="small"),
+            "Now $/Ctr": st.column_config.TextColumn(width="small"),
+        },
     )
     selected_rows = event.selection.rows if hasattr(event, "selection") else []
     if selected_rows:
