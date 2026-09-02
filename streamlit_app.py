@@ -847,29 +847,45 @@ st.subheader("Open Positions")
 open_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "open"]
 
 if open_trades_indexed:
-    rows = [{
-        "Underlying": t["underlying"],
-        "Entered (NYC)": format_nyc(t["time_opened"]),
-        "Class": t["class"],
-        "Qty": t["qty"],
-        "Entry $/Ctr": f"${t['purchase_price_per_contract']:.2f}" if t["purchase_price_per_contract"] is not None else "—",
-        "Now $/Ctr": f"${t['current_value_per_contract']:.2f}" if t["current_value_per_contract"] is not None else "—",
-        "Unrealized P/L": f"${t['outcome']:,.2f}",
-    } for _, t in open_trades_indexed]
+    rows = []
+    for _, t in open_trades_indexed:
+        # Same compute_leg_breakdown() used for Trade History, not the
+        # separate purchase_price_per_contract field — keeps both tables
+        # using one consistent calculation method, not two that happen
+        # to agree most of the time.
+        breakdown = compute_leg_breakdown(t, positions)
+        qty = t["qty"] or 1
+        entry_per_ctr = breakdown["grand_purchase"] / qty
+        current_per_ctr = (breakdown["grand_current"] / qty) if breakdown["grand_current"] is not None else None
+        rows.append({
+            "Underlying": t["underlying"],
+            "Time Opened (NYC)": format_nyc(t["time_opened"]),
+            "Class": t["class"],
+            "Contracts": t["qty"],
+            "Entry $/Ctr": f"${entry_per_ctr:.2f}",
+            "Current $/Ctr": f"${current_per_ctr:.2f}" if current_per_ctr is not None else "—",
+            "Entry Total": f"${breakdown['grand_purchase']:.2f}",
+            "Current Total": f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—",
+            "Status": t["status"],
+            "Outcome": f"${t['outcome']:,.2f}",
+            "Time Closed (NYC)": "—",
+            "Profit/Loss": "open",
+        })
+    st.caption("Entry/Current price and totals are per-contract premium terms (not the ×100 options multiplier) — Outcome is the actual account dollars, live and updating.")
 
     event = st.dataframe(
         rows, use_container_width=True, hide_index=True,
         on_select="rerun", selection_mode="single-row", key="open_positions_table",
         column_config={
             "Entry $/Ctr": st.column_config.TextColumn(width="small"),
-            "Now $/Ctr": st.column_config.TextColumn(width="small"),
+            "Current $/Ctr": st.column_config.TextColumn(width="small"),
         },
     )
     selected_rows = event.selection.rows if hasattr(event, "selection") else []
     if selected_rows:
         position_in_filtered_list = selected_rows[0]
         original_idx, selected_trade = open_trades_indexed[position_in_filtered_list]
-        st.write(f"Selected: **{selected_trade['underlying']}** — opened {rows[position_in_filtered_list]['Entered (NYC)']}")
+        st.write(f"Selected: **{selected_trade['underlying']}** — opened {rows[position_in_filtered_list]['Time Opened (NYC)']}")
         if st.button("🔍 View trade detail & chart", type="primary", key="open_position_detail_btn"):
             go_to_detail(original_idx)
 else:
