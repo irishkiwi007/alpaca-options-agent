@@ -216,7 +216,7 @@ def compute_leg_breakdown(trade: dict, live_positions: list) -> dict:
 
 def format_nyc(iso_ts: str) -> str:
     """Converts any ISO timestamp (assumed UTC if no offset given) to
-    'dd mm yyyy HH:MM:SS' in America/New_York time."""
+    'dd mm yyyy HH:MM' in America/New_York time."""
     if not iso_ts:
         return "—"
     try:
@@ -225,7 +225,7 @@ def format_nyc(iso_ts: str) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         nyc = dt.astimezone(NYC_TZ)
-        return nyc.strftime("%d %m %Y %H:%M:%S")
+        return nyc.strftime("%d %m %Y %H:%M")
     except Exception:
         return iso_ts
 
@@ -704,10 +704,10 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
 
     sc4, sc5 = st.columns(2)
     with sc4:
-        st.metric("Entry Total", f"${summary_breakdown['grand_purchase']:.2f}")
+        st.metric("Entry Total", f"${summary_breakdown['grand_purchase'] * 100:,.2f}")
     with sc5:
-        st.metric(f"{price_label} Total", f"${summary_breakdown['grand_current']:.2f}" if summary_breakdown["grand_current"] is not None else "—")
-    st.caption("'Current/Last' reflects the most recently quoted price whether the market is open or closed right now — it is not necessarily a live, updating quote outside market hours.")
+        st.metric(f"{price_label} Total", f"${summary_breakdown['grand_current'] * 100:,.2f}" if summary_breakdown["grand_current"] is not None else "—")
+    st.caption("'Current/Last' reflects the most recently quoted price whether the market is open or closed right now — it is not necessarily a live, updating quote outside market hours. Totals include the standard ×100 options multiplier.")
 
     st.divider()
 
@@ -724,18 +724,18 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             "Purchase $": f"${l['purchase_price']:.2f}",
             ("Exit $" if trade["status"] == "closed" else "Current $"): (f"${l['current_or_exit_price']:.2f}" if l["current_or_exit_price"] is not None else "—"),
             "P/L per Ctr": f"${l['profit_per_contract']:.2f}" if l["profit_per_contract"] is not None else "—",
-            "Leg Total P/L": f"${l['leg_total_profit']:.2f}" if l["leg_total_profit"] is not None else "—",
+            "Leg Total P/L": f"${l['leg_total_profit'] * 100:,.2f}" if l["leg_total_profit"] is not None else "—",
         } for l in breakdown["legs"]]
         st.dataframe(leg_rows, use_container_width=True, hide_index=True)
 
         gc1, gc2, gc3 = st.columns(3)
         with gc1:
-            st.metric("Total Purchase", f"${breakdown['grand_purchase']:.2f}")
+            st.metric("Total Purchase", f"${breakdown['grand_purchase'] * 100:,.2f}")
         with gc2:
-            st.metric("Total Current/Exit", f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—")
+            st.metric("Total Current/Exit", f"${breakdown['grand_current'] * 100:,.2f}" if breakdown["grand_current"] is not None else "—")
         with gc3:
-            st.metric("Total P/L (all legs)", f"${breakdown['grand_profit']:.2f}")
-        st.caption("Purchase/Current/Total figures here are per-contract price × contract count (not the full ×100 options multiplier used elsewhere in this app).")
+            st.metric("Total P/L (all legs)", f"${breakdown['grand_profit'] * 100:,.2f}")
+        st.caption("'$/Ctr' figures are per-contract premium quotes. All totals (here and above) include the standard ×100 options multiplier — real account dollars throughout this page.")
     else:
         st.caption("No leg data available for this trade.")
 
@@ -837,6 +837,20 @@ with wl4:
     win_rate = (len(wins) / len(closed_trades) * 100) if closed_trades else 0
     st.metric("Win Rate", f"{win_rate:.0f}%" if closed_trades else "—")
 
+# Alpaca charges no commission on options, but does pass through small
+# real regulatory/exchange fees (SEC, FINRA TAF, CAT, ORF, OCC clearing)
+# on trading activity. Most of these are billed as a single DAILY
+# aggregate across multiple trades (e.g. "TAF fee for 4 trades on
+# 2026-08-31"), not itemized per trade — so this is shown as one
+# honest total, not attributed to individual trades, since Alpaca
+# itself doesn't calculate it that way.
+fee_activities = fetch(BASE_URL, "/v2/account/activities/FEE")
+if not isinstance(fee_activities, list):
+    fee_activities = []
+total_fees = sum(abs(float(f.get("net_amount", 0) or 0)) for f in fee_activities)
+
+st.metric("Total Fees Paid", f"${total_fees:,.2f}", help="Real exchange/regulatory fees (SEC, FINRA TAF, CAT, ORF, OCC clearing) — already included in Realized P&L above. Shown separately because most fee types are billed as a single daily total across multiple trades, not itemized per trade, so they can't be honestly split across individual Trade History rows.")
+
 if not closed_trades:
     st.info("No closed trades yet — win/loss populates once a position is opened and closed.")
 
@@ -864,14 +878,12 @@ if open_trades_indexed:
             "Contracts": t["qty"],
             "Entry $/Ctr": f"${entry_per_ctr:.2f}",
             "Current $/Ctr": f"${current_per_ctr:.2f}" if current_per_ctr is not None else "—",
-            "Entry Total": f"${breakdown['grand_purchase']:.2f}",
-            "Current Total": f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—",
+            "Entry Total": f"${breakdown['grand_purchase'] * 100:,.2f}",
+            "Current Total": f"${breakdown['grand_current'] * 100:,.2f}" if breakdown["grand_current"] is not None else "—",
             "Status": t["status"],
             "Outcome": f"${t['outcome']:,.2f}",
-            "Time Closed (NYC)": "—",
-            "Profit/Loss": "open",
         })
-    st.caption("Entry/Current price and totals are per-contract premium terms (not the ×100 options multiplier) — Outcome is the actual account dollars, live and updating.")
+    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, live and updating.")
 
     event = st.dataframe(
         rows, use_container_width=True, hide_index=True,
@@ -919,14 +931,14 @@ if closed_trades_indexed:
             "Contracts": t["qty"],
             "Entry $/Ctr": f"${entry_per_ctr:.2f}",
             "Exit $/Ctr": f"${exit_per_ctr:.2f}" if exit_per_ctr is not None else "—",
-            "Entry Total": f"${breakdown['grand_purchase']:.2f}",
-            "Exit Total": f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—",
+            "Entry Total": f"${breakdown['grand_purchase'] * 100:,.2f}",
+            "Exit Total": f"${breakdown['grand_current'] * 100:,.2f}" if breakdown["grand_current"] is not None else "—",
             "Status": t["status"],
             "Outcome": f"${t['outcome']:,.2f}",
             "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
             "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
         })
-    st.caption("Entry/Exit price and totals are per-contract premium terms (not the ×100 options multiplier) — Outcome/Profit/Loss are the actual account dollars.")
+    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, same as Outcome.")
 
     event = st.dataframe(
         trade_rows, use_container_width=True, hide_index=True,
@@ -958,7 +970,7 @@ with c3:
     st.write("Reviews its own recent activity each cycle and adjusts its own approach — not a fixed script.")
 
 now_nyc = datetime.now(timezone.utc).astimezone(NYC_TZ)
-st.caption(f"Last refreshed: {now_nyc.strftime('%d %m %Y %H:%M:%S')} NYC · [View source on GitHub](https://github.com/irishkiwi007/alpaca-options-agent)")
+st.caption(f"Last refreshed: {now_nyc.strftime('%d %m %Y %H:%M')} NYC · [View source on GitHub](https://github.com/irishkiwi007/alpaca-options-agent)")
 
 if st.button("🔄 Refresh"):
     st.rerun()

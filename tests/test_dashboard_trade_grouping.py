@@ -154,12 +154,12 @@ REAL_QQQ_ORDERS = [
 
 
 def test_nyc_format_converts_correctly():
-    # 16:01:12 UTC in August (EDT, UTC-4) = 12:01:12 NYC
-    assert format_nyc("2026-08-31T16:01:12+00:00") == "31 08 2026 12:01:12"
+    # 16:01:12 UTC in August (EDT, UTC-4) = 12:01 NYC (seconds intentionally dropped per user request)
+    assert format_nyc("2026-08-31T16:01:12+00:00") == "31 08 2026 12:01"
 
 
 def test_nyc_format_handles_z_suffix():
-    assert format_nyc("2026-08-31T16:01:12Z") == "31 08 2026 12:01:12"
+    assert format_nyc("2026-08-31T16:01:12Z") == "31 08 2026 12:01"
 
 
 def test_nyc_format_empty_string():
@@ -396,3 +396,33 @@ def test_real_modification_still_merges_correctly_with_batched_opens():
     assert len(trades) == 1
     assert trades[0]["status"] == "closed"
     assert abs(trades[0]["outcome"] - (-2480.0)) < 0.01
+
+
+def test_total_fees_sums_real_fee_activities_correctly():
+    """
+    Verified against the account's actual real FEE activities pulled
+    live: 12 fee records (OCC clearing, CAT, REG, ORF, TAF) totaling
+    $15.69. Alpaca reports net_amount as negative; the dashboard sums
+    the absolute value to get a positive 'fees paid' total.
+    """
+    real_fee_activities = [
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-1"},
+        {"activity_type": "FEE", "activity_sub_type": "CAT", "net_amount": "-0.11"},
+        {"activity_type": "FEE", "activity_sub_type": "REG", "net_amount": "-0.67"},
+        {"activity_type": "FEE", "activity_sub_type": "ORF", "net_amount": "-5.4"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-1"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-0.5"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-2"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-1"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-1"},
+        {"activity_type": "FEE", "activity_sub_type": "TAF", "net_amount": "-0.51"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-0.5"},
+        {"activity_type": "FEE", "activity_sub_type": "OCC", "net_amount": "-2"},
+    ]
+    total_fees = sum(abs(float(f.get("net_amount", 0) or 0)) for f in real_fee_activities)
+    assert abs(total_fees - 15.69) < 0.01
+
+
+def test_total_fees_empty_list_returns_zero():
+    total_fees = sum(abs(float(f.get("net_amount", 0) or 0)) for f in [])
+    assert total_fees == 0.0
