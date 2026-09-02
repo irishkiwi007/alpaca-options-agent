@@ -686,6 +686,31 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
 
     st.divider()
 
+    # ---- Trade Summary: entry vs current/exit, per-contract and total ----
+    st.subheader("Trade Summary")
+    summary_breakdown = compute_leg_breakdown(trade, positions)
+    qty = trade["qty"] or 1
+    entry_per_ctr = summary_breakdown["grand_purchase"] / qty
+    exit_or_current_per_ctr = (summary_breakdown["grand_current"] / qty) if summary_breakdown["grand_current"] is not None else None
+    price_label = "Exit" if trade["status"] == "closed" else "Current/Last"
+
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        st.metric("Entry $/Ctr", f"${entry_per_ctr:.2f}")
+    with sc2:
+        st.metric(f"{price_label} $/Ctr", f"${exit_or_current_per_ctr:.2f}" if exit_or_current_per_ctr is not None else "—")
+    with sc3:
+        st.metric("Contracts", trade["qty"])
+
+    sc4, sc5 = st.columns(2)
+    with sc4:
+        st.metric("Entry Total", f"${summary_breakdown['grand_purchase']:.2f}")
+    with sc5:
+        st.metric(f"{price_label} Total", f"${summary_breakdown['grand_current']:.2f}" if summary_breakdown["grand_current"] is not None else "—")
+    st.caption("'Current/Last' reflects the most recently quoted price whether the market is open or closed right now — it is not necessarily a live, updating quote outside market hours.")
+
+    st.divider()
+
     # ---- Per-leg purchase / current-or-exit / profit breakdown ----
     st.subheader("Per-Leg Breakdown")
     breakdown = compute_leg_breakdown(trade, positions)
@@ -865,15 +890,27 @@ st.caption("Completed trades only — click a row, then use the button below to 
 closed_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "closed"]
 
 if closed_trades_indexed:
-    trade_rows = [{
-        "Underlying": t["underlying"],
-        "Time Opened (NYC)": format_nyc(t["time_opened"]),
-        "Class": t["class"],
-        "Status": t["status"],
-        "Outcome": f"${t['outcome']:,.2f}",
-        "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
-        "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
-    } for _, t in closed_trades_indexed]
+    trade_rows = []
+    for _, t in closed_trades_indexed:
+        breakdown = compute_leg_breakdown(t, [])
+        qty = t["qty"] or 1
+        entry_per_ctr = breakdown["grand_purchase"] / qty
+        exit_per_ctr = (breakdown["grand_current"] / qty) if breakdown["grand_current"] is not None else None
+        trade_rows.append({
+            "Underlying": t["underlying"],
+            "Time Opened (NYC)": format_nyc(t["time_opened"]),
+            "Class": t["class"],
+            "Contracts": t["qty"],
+            "Entry $/Ctr": f"${entry_per_ctr:.2f}",
+            "Exit $/Ctr": f"${exit_per_ctr:.2f}" if exit_per_ctr is not None else "—",
+            "Entry Total": f"${breakdown['grand_purchase']:.2f}",
+            "Exit Total": f"${breakdown['grand_current']:.2f}" if breakdown["grand_current"] is not None else "—",
+            "Status": t["status"],
+            "Outcome": f"${t['outcome']:,.2f}",
+            "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
+            "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
+        })
+    st.caption("Entry/Exit price and totals are per-contract premium terms (not the ×100 options multiplier) — Outcome/Profit/Loss are the actual account dollars.")
 
     event = st.dataframe(
         trade_rows, use_container_width=True, hide_index=True,
