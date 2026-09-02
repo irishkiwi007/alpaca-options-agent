@@ -12,14 +12,17 @@ default auto-detection picks them up with zero configuration. The
 trading agent's own, much heavier dependencies live in
 requirements-agent.txt instead — install that one on the VM, not this one.
 
-Honest limitation: this dashboard only sees what Alpaca's API exposes
-(orders, positions, fills, bars). It does NOT have access to the
-agent's own written reasoning/rationale for a trade — that lives only
-in logs/events.jsonl on the VM, which this hosted app has no connection
-to. The trade detail page shows real market context (a price chart
-around the decision) but does not yet show the agent's own trigger
-reasoning or lessons-learned — that requires syncing the VM's log
-somewhere this app can read, which is a separate, deferred piece of work.
+This dashboard has no live connection to the VM — it only sees what
+Alpaca's API exposes directly (orders, positions, fills, bars). The
+agent's own written rationale for each trade lives in logs/events.jsonl
+on the VM, so it's bridged in indirectly: deploy/sync_reasoning.sh runs
+on the VM (via cron), derives a small logs/reasoning_export.json from
+the local event log, and pushes it to this repo. This app then fetches
+that file over raw.githubusercontent.com and matches it to each trade
+by underlying + leg symbols (see fetch_reasoning_export /
+match_reasoning below). If the VM's sync cron isn't running, or a
+trade is very recent, the detail page degrades gracefully to "no
+reasoning synced yet" rather than erroring.
 """
 import streamlit as st
 import requests
@@ -80,6 +83,51 @@ def fetch(base: str, path: str, params: dict = None):
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
+
+
+REASONING_EXPORT_URL = (
+    "https://raw.githubusercontent.com/irishkiwi007/alpaca-options-agent"
+    "/main/logs/reasoning_export.json"
+)
+
+
+@st.cache_data(ttl=300)
+def fetch_reasoning_export():
+    """
+    Pulls the agent's own trade rationale, synced from the VM's local
+    events.jsonl via deploy/sync_reasoning.sh. Cached 5 minutes.
+    Returns [] on any failure — callers treat that as "no reasoning
+    available yet", not an error to surface.
+    """
+    try:
+        resp = requests.get(REASONING_EXPORT_URL, timeout=10)
+        if resp.status_code != 200:
+            return []
+        return resp.json().get("records", [])
+    except Exception:
+        return []
+
+
+def match_reasoning(trade: dict, records: list) -> dict:
+    """
+    Matches a built trade record to its open/close reasoning entries.
+    Keyed on underlying + actual leg symbols (not timestamp proximity)
+    since two trades on the same underlying can be open concurrently.
+    """
+    open_symbols = {e["symbol"] for e in trade.get("initial_open_events", [])}
+    close_symbols = {e["symbol"] for e in trade.get("close_events", [])}
+
+    open_reasoning, close_reasoning = None, None
+    for r in records:
+        if r.get("underlying") != trade["underlying"]:
+            continue
+        r_symbols = {r.get("buy_symbol"), r.get("sell_symbol")}
+        if r.get("action") == "open" and open_symbols and r_symbols & open_symbols:
+            open_reasoning = r
+        elif r.get("action") == "close" and close_symbols and r_symbols & close_symbols:
+            close_reasoning = r
+
+    return {"open": open_reasoning, "close": close_reasoning}
 
 
 def parse_underlying(option_symbol: str) -> str:
@@ -662,12 +710,37 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
 
     st.caption(f"Opened: {format_nyc(trade['time_opened'])} NYC" + (f" · Closed: {format_nyc(trade['time_closed'])} NYC" if trade["time_closed"] else " · Still open"))
 
-    st.info(
-        "ℹ️ Trigger reasoning and lessons-learned aren't shown here yet — that text only "
-        "exists in the agent's own log on the deployment VM, which this hosted dashboard "
-        "doesn't have a live connection to. This section shows real market data and actual "
-        "fill details only."
-    )
+    reasoning_records = fetch_reasoning_export()
+    matched = match_reasoning(trade, reasoning_records)
+
+    st.subheader("Agent's Reasoning")
+    if not matched["open"] and not matched["close"]:
+        st.info(
+            "ℹ️ No reasoning synced for this trade yet. The agent's rationale is written on "
+            "the VM and synced to this dashboard periodically — if this trade was opened "
+            "very recently, it may not have synced yet."
+        )
+    else:
+        if matched["open"]:
+            r = matched["open"]
+            with st.container(border=True):
+                st.markdown(f"**Why it opened this trade** · {format_nyc(r['timestamp'])} NYC")
+                st.write(r.get("rationale") or "—")
+                st.caption(
+                    f"{r.get('contracts')} contract(s) · limit ${r.get('limit_price'):.2f} · "
+                    f"max loss/contract ${r.get('max_loss_per_contract'):.2f}"
+                )
+        if matched["close"]:
+            r = matched["close"]
+            with st.container(border=True):
+                st.markdown(f"**Why it closed this trade** · {format_nyc(r['timestamp'])} NYC")
+                st.write(r.get("rationale") or "—")
+        if matched["open"] and not matched["close"] and trade["status"] == "closed":
+            st.caption(
+                "No closing rationale synced — this trade may have been closed by expiration "
+                "or the drawdown backstop rather than an agent decision, neither of which log "
+                "a rationale field."
+            )
 
     # ---- Price chart around entry ----
     st.subheader(f"Market Context — {trade['underlying']}")
