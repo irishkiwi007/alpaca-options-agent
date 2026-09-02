@@ -16,9 +16,10 @@ def _load_functions():
         source = f.read()
     tree = ast.parse(source)
     namespace = {"defaultdict": __import__("collections").defaultdict}
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
     namespace["datetime"] = datetime
+    namespace["timedelta"] = timedelta
     namespace["timezone"] = timezone
     namespace["NYC_TZ"] = ZoneInfo("America/New_York")
     for node in tree.body:
@@ -426,3 +427,62 @@ def test_total_fees_sums_real_fee_activities_correctly():
 def test_total_fees_empty_list_returns_zero():
     total_fees = sum(abs(float(f.get("net_amount", 0) or 0)) for f in [])
     assert total_fees == 0.0
+
+
+def test_position_vanished_at_expiry_with_no_close_and_no_opexp():
+    """
+    Regression test for a real bug found on a live account: a position
+    can disappear from Alpaca's positions list at expiry with NEITHER
+    a closing order NOR an OPEXP activity recorded at all. Without a
+    fallback, this trade would silently report as 'open' with $0
+    unrealized P&L (since live_positions no longer has a match),
+    hiding a real ~$2,520 loss. Uses an expiry date far in the past
+    (2020) to reliably test the 'expiry has passed' branch regardless
+    of when this test suite is actually run.
+    """
+    orders = [{"status": "filled", "order_class": "mleg", "submitted_at": "2020-01-02T19:55:50", "filled_at": "2020-01-02T19:55:50", "legs": [
+        {"symbol": "QQQ200103C00720000", "position_intent": "sell_to_open", "qty": "20", "filled_avg_price": "0.97"},
+        {"symbol": "QQQ200103C00717000", "position_intent": "buy_to_open", "qty": "20", "filled_avg_price": "2.23"}]}]
+    live_positions = [
+        {"symbol": "SOME_OTHER_SYMBOL", "unrealized_pl": "100.0"},
+    ]
+    trades = build_trade_records(orders, live_positions, expiry_activities=[])
+    assert len(trades) == 1
+    t = trades[0]
+    assert t["status"] == "closed", "Vanished-at-expiry position must not silently stay 'open'"
+    assert abs(t["outcome"] - (-2520.0)) < 0.01
+    assert t["profit_loss"] == "loss"
+
+
+def test_genuinely_open_position_not_yet_expired_stays_open():
+    """A position whose expiry is in the future and is still actually
+    held must NOT be affected by the vanished-at-expiry fallback."""
+    import datetime as dt
+    future_year = dt.datetime.now().year + 5
+    yy = str(future_year)[2:]
+    symbol_long = f"QQQ{yy}0315C00712000"
+    symbol_short = f"QQQ{yy}0315C00720000"
+    orders = [{"status": "filled", "order_class": "mleg", "submitted_at": "2026-09-01T16:03:16", "filled_at": "2026-09-01T16:03:16", "legs": [
+        {"symbol": symbol_short, "position_intent": "sell_to_open", "qty": "10", "filled_avg_price": "0.71"},
+        {"symbol": symbol_long, "position_intent": "buy_to_open", "qty": "10", "filled_avg_price": "3.42"}]}]
+    live_positions = [
+        {"symbol": symbol_long, "unrealized_pl": "-1590"},
+        {"symbol": symbol_short, "unrealized_pl": "480"},
+    ]
+    trades = build_trade_records(orders, live_positions, [])
+    assert trades[0]["status"] == "open"
+
+
+def test_position_still_genuinely_held_not_treated_as_vanished():
+    """Even with a past expiry date, if the symbols ARE still in live
+    positions, don't force-close it -- that would be a genuine data
+    inconsistency worth surfacing as still-open, not silently masked."""
+    orders = [{"status": "filled", "order_class": "mleg", "submitted_at": "2020-01-02T19:55:50", "filled_at": "2020-01-02T19:55:50", "legs": [
+        {"symbol": "QQQ200103C00720000", "position_intent": "sell_to_open", "qty": "20", "filled_avg_price": "0.97"},
+        {"symbol": "QQQ200103C00717000", "position_intent": "buy_to_open", "qty": "20", "filled_avg_price": "2.23"}]}]
+    live_positions = [
+        {"symbol": "QQQ200103C00717000", "unrealized_pl": "10.0"},
+        {"symbol": "QQQ200103C00720000", "unrealized_pl": "-5.0"},
+    ]
+    trades = build_trade_records(orders, live_positions, [])
+    assert trades[0]["status"] == "open"

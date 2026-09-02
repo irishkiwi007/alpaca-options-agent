@@ -490,7 +490,57 @@ def build_trade_records(orders, live_positions, expiry_activities=None):
                     active_trades.remove(at)  # done — a future open on these same symbols starts a genuinely new trade
 
         for at in active_trades:
-            if at["events"]:
+            if not at["events"]:
+                continue
+
+            # Fallback for a real gap found via live account data: a
+            # position can vanish from Alpaca's positions list at
+            # expiry with NEITHER a closing order NOR an OPEXP activity
+            # recorded at all — confirmed against a real account where
+            # a Sep 1 spread disappeared with zero activity of either
+            # kind. Without this, such a trade would silently report as
+            # "open" with $0 unrealized P&L, hiding what is very likely
+            # a real, meaningful loss. If none of this trade's symbols
+            # are still held AND its expiration date has passed, treat
+            # it the same way an explicit OPEXP would be treated: both
+            # sides expire at $0, using the same long/short-aware math
+            # already used for genuine OPEXP events.
+            live_symbols = {p.get("symbol") for p in live_positions}
+            still_held = bool(at["symbols"] & live_symbols)
+            expiry_passed = False
+            any_symbol = next(iter(at["symbols"]), None)
+            expiry_ts = None
+            if any_symbol and len(any_symbol) >= 15:
+                date_code = any_symbol[-15:-9]
+                try:
+                    yy, mm, dd = int(date_code[0:2]), int(date_code[2:4]), int(date_code[4:6])
+                    expiry_dt = datetime(2000 + yy, mm, dd, tzinfo=timezone.utc) + timedelta(hours=21)  # end of expiry trading day
+                    expiry_ts = expiry_dt.isoformat()
+                    expiry_passed = datetime.now(timezone.utc) > expiry_dt
+                except Exception:
+                    pass
+
+            if not still_held and expiry_passed:
+                for symbol, lots in list(at["long_lots"].items()):
+                    remaining_qty = sum(l[0] for l in lots)
+                    if remaining_qty > 0:
+                        leg_pnl = sum((0 - lot_price) * lot_qty * 100 for lot_qty, lot_price in lots)
+                        at["pending_pnl"] += leg_pnl
+                        at["events"].append({
+                            "ts": expiry_ts, "symbol": symbol, "intent": "sell_to_close", "side": None,
+                            "qty": remaining_qty, "price": 0.0, "order_class": "expiration", "source": "expiration",
+                        })
+                for symbol, lots in list(at["short_lots"].items()):
+                    remaining_qty = sum(l[0] for l in lots)
+                    if remaining_qty > 0:
+                        leg_pnl = sum((lot_price - 0) * lot_qty * 100 for lot_qty, lot_price in lots)
+                        at["pending_pnl"] += leg_pnl
+                        at["events"].append({
+                            "ts": expiry_ts, "symbol": symbol, "intent": "buy_to_close", "side": None,
+                            "qty": remaining_qty, "price": 0.0, "order_class": "expiration", "source": "expiration",
+                        })
+                flush(at, is_open=False)
+            else:
                 flush(at, is_open=True)
 
     trades.sort(key=lambda t: t["time_opened"], reverse=True)
