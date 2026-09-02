@@ -129,6 +129,16 @@ def parse_occ_symbol(symbol: str) -> dict:
     }
 
 
+def trade_expiry(trade: dict) -> str:
+    """Every leg of a trade shares the same expiration date (that's what
+    groups them into one trade in the first place) — pull it from
+    whichever leg event is available, opening or closing."""
+    all_events = trade["initial_open_events"] + trade["modification_events"] + trade["close_events"]
+    if not all_events:
+        return "—"
+    return parse_occ_symbol(all_events[0]["symbol"])["expiry"]
+
+
 def compute_leg_breakdown(trade: dict, live_positions: list) -> dict:
     """
     Per-leg purchase/current-or-exit/profit breakdown, per contract and
@@ -875,6 +885,7 @@ if open_trades_indexed:
             "Underlying": t["underlying"],
             "Time Opened (NYC)": format_nyc(t["time_opened"]),
             "Class": t["class"],
+            "Expiry": trade_expiry(t),
             "Contracts": t["qty"],
             "Entry $/Ctr": f"${entry_per_ctr:.2f}",
             "Current $/Ctr": f"${current_per_ctr:.2f}" if current_per_ctr is not None else "—",
@@ -928,6 +939,7 @@ if closed_trades_indexed:
             "Underlying": t["underlying"],
             "Time Opened (NYC)": format_nyc(t["time_opened"]),
             "Class": t["class"],
+            "Expiry": trade_expiry(t),
             "Contracts": t["qty"],
             "Entry $/Ctr": f"${entry_per_ctr:.2f}",
             "Exit $/Ctr": f"${exit_per_ctr:.2f}" if exit_per_ctr is not None else "—",
