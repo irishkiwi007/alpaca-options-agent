@@ -25,6 +25,7 @@ trade is very recent, the detail page degrades gracefully to "no
 reasoning synced yet" rather than erroring.
 """
 import streamlit as st
+import re
 import requests
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -110,15 +111,24 @@ def fetch_reasoning_export():
 
 def render_rationale_text(text: str) -> str:
     """
-    Escapes literal "$" before markdown rendering. Streamlit's markdown
-    treats a pair of "$" as inline LaTeX/KaTeX math delimiters by
-    default; the agent's rationale text is full of dollar amounts, so
-    without this, arbitrary spans between dollar signs get rendered as
-    garbled math notation in a different font.
+    Two fixes for the agent's rationale text, which is written by the
+    LLM as dense run-on prose:
+    1. Escapes literal "$" before markdown rendering — Streamlit's
+       markdown treats a pair of "$" as inline LaTeX/KaTeX math
+       delimiters by default, and this text is full of dollar amounts,
+       so without this, arbitrary spans between dollar signs render as
+       garbled math notation in a different font.
+    2. Splits on sentence boundaries (period + whitespace) and puts
+       each sentence on its own line, dropping the period. Safe
+       against decimals like "$2.01" since a decimal point is never
+       followed by whitespace.
     """
     if not text:
         return "—"
-    return text.replace("$", "\\$")
+    text = text.replace("$", "\\$")
+    sentences = re.split(r"\.\s+", text.strip())
+    sentences = [s.rstrip(".").strip() for s in sentences if s.strip()]
+    return "  \n".join(sentences)
 
 
 def match_reasoning(trade: dict, records: list) -> dict:
@@ -794,6 +804,10 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
     end = requested_end.isoformat()
     bars_resp = fetch(DATA_URL, f"/v2/stocks/{trade['underlying']}/bars", {
         "timeframe": bar_timeframe, "start": start, "end": end, "limit": 300,
+        "feed": "iex",  # SIP (the default) isn't authorized for recent/real-time
+                        # data on paper/free accounts and returns nothing for the
+                        # whole request rather than just the recent tail; IEX covers
+                        # the current session without needing a real-time subscription.
     })
     bars = bars_resp.get("bars", []) if isinstance(bars_resp, dict) else []
 
@@ -858,7 +872,6 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         st.metric("Entry Total", f"${summary_breakdown['grand_purchase'] * 100:,.2f}")
     with sc5:
         st.metric(f"{price_label} Total", f"${summary_breakdown['grand_current'] * 100:,.2f}" if summary_breakdown["grand_current"] is not None else "—")
-    st.caption("'Current/Last' reflects the most recently quoted price whether the market is open or closed right now — it is not necessarily a live, updating quote outside market hours. Totals include the standard ×100 options multiplier.")
 
     st.divider()
 
@@ -886,7 +899,6 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             st.metric("Total Current/Exit", f"${breakdown['grand_current'] * 100:,.2f}" if breakdown["grand_current"] is not None else "—")
         with gc3:
             st.metric("Total P/L (all legs)", f"${breakdown['grand_profit'] * 100:,.2f}")
-        st.caption("'$/Ctr' figures are per-contract premium quotes. All totals (here and above) include the standard ×100 options multiplier — real account dollars throughout this page.")
     else:
         st.caption("No leg data available for this trade.")
 
@@ -905,7 +917,7 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         render_leg_table(trade["close_events"], "No closing legs recorded.")
     else:
         st.subheader("Closing trade details")
-        st.caption("Still open — no closing legs yet.")
+        st.caption("Still open")
 
     st.stop()
 
@@ -1035,7 +1047,6 @@ if open_trades_indexed:
             "Status": t["status"],
             "Outcome": f"${t['outcome']:,.2f}",
         })
-    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, live and updating.")
 
     event = st.dataframe(
         rows, use_container_width=True, hide_index=True,
@@ -1065,7 +1076,6 @@ st.divider()
 # with status='open' the moment it was placed, before it had any
 # actual outcome yet.
 st.subheader("Trade History")
-st.caption("Completed trades only — click a row, then use the button below to open its detail page with a price chart. Still-open positions are in Open Positions, above.")
 
 closed_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "closed"]
 
@@ -1091,7 +1101,6 @@ if closed_trades_indexed:
             "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
             "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
         })
-    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, same as Outcome.")
 
     event = st.dataframe(
         trade_rows, use_container_width=True, hide_index=True,
