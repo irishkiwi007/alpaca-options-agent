@@ -2,7 +2,7 @@
   "records": [
     {
       "timestamp": "2026-08-30T01:49:12.347163+00:00",
-      "action": null,
+      "action": "open",
       "underlying": "SPY",
       "buy_symbol": "SPY260831C00674000",
       "sell_symbol": "SPY260831C00675000",
@@ -13,7 +13,7 @@
     },
     {
       "timestamp": "2026-08-31T13:31:44.930450+00:00",
-      "action": null,
+      "action": "open",
       "underlying": "QQQ",
       "buy_symbol": "QQQ260902C00716000",
       "sell_symbol": "QQQ260902C00720000",
@@ -24,7 +24,7 @@
     },
     {
       "timestamp": "2026-08-31T14:16:12.218044+00:00",
-      "action": null,
+      "action": "open",
       "underlying": "QQQ",
       "buy_symbol": "QQQ260902C00720000",
       "sell_symbol": "QQQ260902C00716000",
@@ -35,7 +35,7 @@
     },
     {
       "timestamp": "2026-08-31T14:16:35.517092+00:00",
-      "action": null,
+      "action": "open",
       "underlying": "QQQ",
       "buy_symbol": "QQQ260902C00716000",
       "sell_symbol": "QQQ260902C00720000",
