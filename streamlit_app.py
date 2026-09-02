@@ -108,6 +108,19 @@ def fetch_reasoning_export():
         return []
 
 
+def render_rationale_text(text: str) -> str:
+    """
+    Escapes literal "$" before markdown rendering. Streamlit's markdown
+    treats a pair of "$" as inline LaTeX/KaTeX math delimiters by
+    default; the agent's rationale text is full of dollar amounts, so
+    without this, arbitrary spans between dollar signs get rendered as
+    garbled math notation in a different font.
+    """
+    if not text:
+        return "—"
+    return text.replace("$", "\\$")
+
+
 def match_reasoning(trade: dict, records: list) -> dict:
     """
     Matches a built trade record to its open/close reasoning entries.
@@ -725,7 +738,7 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             r = matched["open"]
             with st.container(border=True):
                 st.markdown(f"**Why it opened this trade** · {format_nyc(r['timestamp'])} NYC")
-                st.write(r.get("rationale") or "—")
+                st.markdown(render_rationale_text(r.get("rationale")))
                 st.caption(
                     f"{r.get('contracts')} contract(s) · limit ${r.get('limit_price'):.2f} · "
                     f"max loss/contract ${r.get('max_loss_per_contract'):.2f}"
@@ -734,7 +747,7 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             r = matched["close"]
             with st.container(border=True):
                 st.markdown(f"**Why it closed this trade** · {format_nyc(r['timestamp'])} NYC")
-                st.write(r.get("rationale") or "—")
+                st.markdown(render_rationale_text(r.get("rationale")))
         if matched["open"] and not matched["close"] and trade["status"] == "closed":
             st.caption(
                 "No closing rationale synced — this trade may have been closed by expiration "
@@ -773,7 +786,12 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         bar_timeframe = "1Hour"
 
     start = (entry_dt - padding).isoformat()
-    end = (span_end + padding).isoformat()
+    # Never request an end-time in the future — the bars API has no
+    # data there and returns nothing for the *entire* request rather
+    # than just the missing tail, which is why open trades previously
+    # showed no chart at all.
+    requested_end = min(span_end + padding, datetime.now(timezone.utc))
+    end = requested_end.isoformat()
     bars_resp = fetch(DATA_URL, f"/v2/stocks/{trade['underlying']}/bars", {
         "timeframe": bar_timeframe, "start": start, "end": end, "limit": 300,
     })
