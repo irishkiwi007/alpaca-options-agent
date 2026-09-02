@@ -1,0 +1,235 @@
+{
+  "records": [
+    {
+      "timestamp": "2026-08-30T01:49:12.347163+00:00",
+      "action": null,
+      "underlying": "SPY",
+      "buy_symbol": "SPY260831C00674000",
+      "sell_symbol": "SPY260831C00675000",
+      "contracts": 1,
+      "limit_price": 3.63,
+      "max_loss_per_contract": 363.0,
+      "rationale": "One-off manual verification trade: confirms the place_spread_order code path, both hard backstops, and Alpaca order submission all work end-to-end before relying on it unattended."
+    },
+    {
+      "timestamp": "2026-08-31T13:31:44.930450+00:00",
+      "action": null,
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260902C00716000",
+      "sell_symbol": "QQQ260902C00720000",
+      "contracts": 40,
+      "limit_price": 2.01,
+      "max_loss_per_contract": 201.0,
+      "rationale": "QQQ bull call spread on Sep 2 expiry. QQQ reversed from pre-market weakness (~$714) to open strong at ~$716. The 50-delta strike at $716 confirms current price. Low IV (~19%) makes debit spreads cost-effective. The market absorbed selling pressure and opened at a bullish level vs Friday close. Targeting a move to $720+ by Wednesday. Spread width $4, debit ~$2.01, ~1:1 risk/reward with strong entry signal from opening reversal."
+    },
+    {
+      "timestamp": "2026-08-31T14:16:12.218044+00:00",
+      "action": null,
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260902C00720000",
+      "sell_symbol": "QQQ260902C00716000",
+      "contracts": 40,
+      "limit_price": -1.4,
+      "max_loss_per_contract": 260.0,
+      "rationale": "Closing the QQQ $716/$720C bull call spread. Two failed intraday rally attempts (bounces to $715.84-$715.90 both rejected). QQQ now back at $714.09-$714.29, showing lower highs pattern (717 \u2192 715.90 \u2192 714.10). Break-even at expiry requires QQQ at $717.76 \u2014 over $3.50 from current price. Theta accelerating on Sep 2 expiry. Locking in ~$1,360 loss rather than risk full position deterioration. Selling the spread for ~$1.40 credit (bid/ask: $716C at $2.71 bid, $720C at $1.30 ask, net ~$1.41 credit)."
+    },
+    {
+      "timestamp": "2026-08-31T14:16:35.517092+00:00",
+      "action": null,
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260902C00716000",
+      "sell_symbol": "QQQ260902C00720000",
+      "contracts": 40,
+      "limit_price": 1.4,
+      "max_loss_per_contract": 260.0,
+      "rationale": "Attempting to close QQQ $716/$720C bull call spread via matching the original leg structure. Two failed intraday rally attempts (bounces to $715.84-$715.90 both rejected). QQQ now back at $714.09-$714.29, showing lower highs. Break-even at expiry requires QQQ at $717.76 \u2014 $3.50+ from current. Cutting loss of ~$1,360 to preserve capital."
+    },
+    {
+      "timestamp": "2026-08-31T19:55:45.521616+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260901C00717000",
+      "sell_symbol": "QQQ260901C00720000",
+      "contracts": 20,
+      "limit_price": 1.37,
+      "max_loss_per_contract": 137.0,
+      "rationale": "QQQ is at $716.85 with a strong late-session bullish surge (up ~$2.50 from intraday lows). Buying the 717/720 bull call spread expiring Sep 1 to capture overnight continuation of this bullish momentum. QQQ needs to be at only $718.37 at tomorrow's close for full profitability \u2014 just a $1.52 move from current price. Using Sep 1 expiration specifically to avoid 0DTE time constraint (market closes in 6 min) while still capitalizing on the directional setup. Debit of $1.37, max loss $137/contract \u00d7 20 = $2,740 (2.8% of equity \u2014 well within limits). The consistent upward price action in the last 2 hours of August 31 is the directional signal."
+    },
+    {
+      "timestamp": "2026-09-01T13:38:16.622680+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00707000",
+      "sell_symbol": "QQQ260903C00715000",
+      "contracts": 8,
+      "limit_price": 3.17,
+      "max_loss_per_contract": 317.0,
+      "rationale": "QQQ has dropped ~$10 from $717 to $707 in a single session. The pre-market selloff was sharp but QQQ has been consolidating around $706.80-708 for the past hour since the open, suggesting exhaustion of selling momentum. This ATM bull call spread (buy $707C/sell $715C, Sep 3 expiry) profits on any recovery over the next 2 trading days. Break-even is ~$710.17 (only needs +$3 from current), max profit if QQQ reaches $715+. Net debit of ~$3.17 on an $8-wide spread. Risk is ~3.4% of equity \u2014 appropriate size. Bearish momentum appears to be stalling at current levels, and a relief rally on a -1.4% day is a historically plausible setup."
+    },
+    {
+      "timestamp": "2026-09-01T14:28:02.934390+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00709000",
+      "sell_symbol": "QQQ260903C00716000",
+      "contracts": 5,
+      "limit_price": 2.74,
+      "max_loss_per_contract": 274.0,
+      "rationale": "QQQ has bounced strongly from a $705.62 intraday low and is now at $708.91, clearly recovering. My existing 707/715 spread (8 contracts) is profitable (+$224 unrealized). Adding a complementary 709/716 bull call spread for Sep 3 expiry (5 contracts) increases my upside exposure to the continuing recovery. Buy QQQ709C (bid $3.65, ask $3.74, delta 0.496) and sell QQQ716C (bid $1.00, ask $1.07, delta 0.210). Net debit ~$2.74, spread width $7, break-even at $711.74. Total additional risk: $1,370 (~1.4% of equity). Combined risk from both spreads: ~$3,906 (~4.1% of equity). QQQ needs to reach $711.74+ to profit on this second spread \u2014 only $2.83 above current price. NVDA also rising ($218.50), confirming broad tech recovery. The intraday reversal is clean and momentum is sustained upward."
+    },
+    {
+      "timestamp": "2026-09-01T15:50:45.428571+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00715000",
+      "sell_symbol": "QQQ260903C00707000",
+      "contracts": 8,
+      "limit_price": -4.65,
+      "max_loss_per_contract": 320.0,
+      "rationale": "Closing the 707/715 Sep 3 call spread to lock in gains. The spread is essentially at max value ($4.80 vs theoretical max $4.83 at QQQ \u2265$715). QQQ is at $712.22 \u2014 nearly at the short strike. With QQQ having just broken to new session highs, the spread has nearly fully realized its potential. Taking profit now captures ~$1,300 gain (41% of capital at risk) and eliminates the risk of a QQQ reversal eroding these gains. Selling the long 707C and buying back the short 715C at a net credit of ~$4.65."
+    },
+    {
+      "timestamp": "2026-09-01T16:03:11.261452+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00712000",
+      "sell_symbol": "QQQ260903C00720000",
+      "contracts": 10,
+      "limit_price": 2.75,
+      "max_loss_per_contract": 275.0,
+      "rationale": "Opening QQQ 712/720 Sep 3 call spread. QQQ at $711.48 with strong bullish momentum all afternoon \u2014 rallied from $705 lows to $712 highs on consistent buying. The 712/720 spread: buy 712C (~$3.43) sell 720C (~$0.74) for net debit ~$2.69-2.75. Break-even $714.69-$714.75, max gain $5.25-5.31 per contract. QQQ needs only ~$3 more rally to reach break-even with 2 full trading days remaining. This complements the existing 709/716 position by adding more upside exposure while keeping risk well within limits (~$2,750 total risk = 2.8% of equity). The prior 707/715 spread was closed at near-max gain, freeing capital for a fresh entry with a higher break-even that captures the next leg of a potential rally."
+    },
+    {
+      "timestamp": "2026-09-02T09:34:02.931586+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00720000",
+      "sell_symbol": "QQQ260903C00712000",
+      "contracts": 10,
+      "limit_price": -2.4,
+      "max_loss_per_contract": 275.0,
+      "rationale": "Closing the 712/720 Sep 3 call spread. QQQ has dropped ~$7.50 from our $711.50 entry to ~$704 pre-market. With expiry tomorrow (Sep 3), the 712C and 720C are deeply OTM and essentially worthless. Break-even would require QQQ to rally $10.75 in one day \u2014 essentially impossible. Closing to salvage any remaining value (estimated ~$0.30 net) and stop further theta decay. Selling the spread back: buy 720C (near zero) and sell 712C (small residual value ~$0.30). Net credit received will be small but better than letting both legs expire worthless and losing the full $2,750 premium paid."
+    },
+    {
+      "timestamp": "2026-09-02T09:34:25.657557+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00716000",
+      "sell_symbol": "QQQ260903C00709000",
+      "contracts": 5,
+      "limit_price": -0.55,
+      "max_loss_per_contract": 264.0,
+      "rationale": "Closing the 709/716 Sep 3 call spread. QQQ at ~$704, down ~$7.50 from entry area of $711.50. Break-even requires QQQ to rally to $712.64 by tomorrow's close \u2014 a $8.64 move in 1 day. Both legs deeply OTM. The 709C has small residual value (~$0.50-0.70 estimated) and 716C near zero (~$0.05-0.10). Closing to recover whatever residual value remains in the long 709C leg. Net credit expected ~$0.50-0.60 against original $2.64 cost. Taking the ~$2.10 loss per spread now rather than letting theta decay take it to zero by expiry tomorrow."
+    },
+    {
+      "timestamp": "2026-09-02T09:36:45.843301+00:00",
+      "action": "open",
+      "underlying": "NVDA",
+      "buy_symbol": "NVDA260904C00217500",
+      "sell_symbol": "NVDA260904C00225000",
+      "contracts": 10,
+      "limit_price": 2.8,
+      "max_loss_per_contract": 280.0,
+      "rationale": "Opening NVDA Sep 4 217.5/225 call spread. NVDA showing strong relative strength: flat overnight (-$0.60) while QQQ dropped $7.50. Pre-market bars show tight range $216.54-$217.26, orderly and controlled. Yesterday's Sep 4 option chain shows very liquid strikes: 217.5C (26K vol), 220C (59K vol), 225C (43K vol). Net debit ~$2.46-2.80 (accounting for potential IV expansion). Break-even ~$220.26 \u2014 NVDA needs only $3.42 rally from pre-market $216.84 over 2 trading days. Width $7.50, max gain $4.70/contract, max risk $2.80/contract. 10 contracts = $2,800 total risk (2.9% of $94,960 equity). This is an attractive risk/reward with clear relative strength catalyst."
+    },
+    {
+      "timestamp": "2026-09-02T11:13:42.725055+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260911C00715000",
+      "sell_symbol": "QQQ260911C00710000",
+      "contracts": 8,
+      "limit_price": -1.5,
+      "max_loss_per_contract": 350.0,
+      "rationale": "QQQ is in a clear pre-market downtrend, trading ~$704 \u2014 down ~$4 from yesterday's $707.85 close. A bear call spread (sell $710C/buy $715C) for Sep 11 expiry profits if QQQ stays below $710 through next Friday. With QQQ at $704, the short $710C leg is ~$6 OTM, giving reasonable probability of expiring worthless. Setting a conservative $1.50 net credit limit (~$150/contract, $350 max loss per contract on a $5-wide spread) so the order only fills if realistic market pricing at session open confirms the credit. 8 contracts \u00d7 $350 max loss = $2,800 total risk = ~2.9% of equity. Action=open because this is a brand new position, not related to my existing QQQ Sep 3 spread which has separate pending close orders."
+    },
+    {
+      "timestamp": "2026-09-02T13:28:23.248389+00:00",
+      "action": "open",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260911C00715000",
+      "sell_symbol": "QQQ260911C00710000",
+      "contracts": 8,
+      "limit_price": -1.2,
+      "max_loss_per_contract": 380.0,
+      "rationale": "QQQ bear call spread for Sep 11 expiry. QQQ is at $706.71 at market open, with the $710 short strike $3.29 OTM. Pre-market showed a high of $708.25 before pulling back, suggesting $710 has real near-term resistance. With 9 days to expiry, theta will work in favor. Looking for at least $1.20 credit on the $5-wide spread. Max loss per contract = ($5.00 - $1.20) \u00d7 100 = $380. Action is 'open' as this is a new position \u2014 no Sep 11 spread currently held. Note: cannot verify exact Sep 11 ATM chain due to pagination limit cutting off at $683 strike, but extrapolating from Sep 3 pricing ($710C at $2.60-$2.70 with 1 day left), Sep 11 should have significantly more premium, making $1.20 credit realistic for this spread."
+    },
+    {
+      "timestamp": "2026-09-02T13:43:35.158532+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00720000",
+      "sell_symbol": "QQQ260903C00712000",
+      "contracts": 10,
+      "limit_price": -1.05,
+      "max_loss_per_contract": 800.0,
+      "rationale": "Closing the QQQ Sep 3 $712/$720 bull call spread before tomorrow's expiry. QQQ is at $707, with the $712 long call $5 OTM and only 1 day left \u2014 this spread is very unlikely to recover. Current mid value is ~$1.09 ($1.21 long - $0.12 short). Closing at -$1.05 credit (buying the $720C back at $0.12, selling the $712C at ~$1.17) recovers roughly $1,050 of the remaining value before the spread expires worthless. The action is 'close' \u2014 this reduces an existing losing long spread position. Max remaining loss per contract is $800 (original cost of $2.71 - current value ~$1.09 = $1.62 if we let expire, but selling now at $1.05 saves ~$1,050 total)."
+    },
+    {
+      "timestamp": "2026-09-02T14:02:37.027984+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00720000",
+      "sell_symbol": "QQQ260903C00712000",
+      "contracts": 10,
+      "limit_price": -0.75,
+      "max_loss_per_contract": 800.0,
+      "rationale": "Closing QQQ Sep 3 $712/$720 bull call spread before tomorrow's expiration. QQQ at $706.20 is $5.80 below the $712 long strike \u2014 this spread expires worthless tomorrow. Current value is ~$0.78 (long at $0.85, short at $0.07). Closing now at -$0.75 credit recovers ~$750 before the entire position goes to zero at expiry. Previous close attempt was locked by a pending order; that order may have expired as a day order, so retrying now. This is a close action on an existing losing long spread."
+    },
+    {
+      "timestamp": "2026-09-02T14:03:39.468291+00:00",
+      "action": "close",
+      "underlying": "NVDA",
+      "buy_symbol": "NVDA260904C00225000",
+      "sell_symbol": "NVDA260904C00217500",
+      "contracts": 10,
+      "limit_price": -3.9,
+      "max_loss_per_contract": 750.0,
+      "rationale": "Closing the NVDA Sep 4 $217.50/$225 bull call spread to lock in significant profit. NVDA has rallied from entry ~$218 to $221.50 today, making the $217.50C deeply ITM at $5.37 bid vs the $225C short now at $1.30. Net spread value is ~$4.07 vs entry cost of $2.79, yielding +$1,280 unrealized profit (+46%). Closing now at -$3.90 net credit (buying back the $225C at ~$1.31, selling the $217.50C at ~$5.21) locks in approximately $1,120-1,280 in profit. Risk of holding overnight into Friday expiry with NVDA needing $3.50 more to run to maximize at $225 outweighs the potential upside of an extra $200-400. This is action=close on the existing long bull call spread."
+    },
+    {
+      "timestamp": "2026-09-02T14:18:52.342074+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260911C00710000",
+      "sell_symbol": "QQQ260911C00715000",
+      "contracts": 16,
+      "limit_price": 2.6,
+      "max_loss_per_contract": 500.0,
+      "rationale": "Closing the QQQ Sep 11 $710/$715 bear call spread (16 contracts) to limit losses. QQQ has bounced sharply from $705.30 to $708.11 in under 30 minutes, threatening the $710 short strike which is now only $1.89 away. The bear thesis is being challenged \u2014 QQQ showed strong buyers at the $705 level and is now recovering toward ATH. Entry credit was $2.14/contract ($3,424 total). Closing at $2.60 debit nets a ~$736 loss vs. max loss of $4,576 if QQQ breaks above $715. This is a defensive close to protect against a continuing rally. The NVDA spread was already closed for profit. This action=close on an existing short spread."
+    },
+    {
+      "timestamp": "2026-09-02T14:20:13.127869+00:00",
+      "action": "open",
+      "underlying": "NVDA",
+      "buy_symbol": "NVDA260911C00222500",
+      "sell_symbol": "NVDA260911C00230000",
+      "contracts": 10,
+      "limit_price": 3.0,
+      "max_loss_per_contract": 300.0,
+      "rationale": "Opening NVDA Sep 11 $222.50/$230 bull call spread on strong intraday momentum. NVDA surged from $217.75 to $222+ on massive volume starting at 1:30 PM ET (1.76M shares in the first minute of the NYSE open, then 400-700K shares/min sustained for 35 minutes). Current price $221.92, holding gains firmly. This is the most active stock by trade count (434K trades today). Buying the $222.50C at ~$4.84, selling the $230C at ~$1.84 for $3.00 net debit. Spread is $7.50 wide. Max loss $300/contract = $3,000 total (3.1% of equity). Breakeven is $225.50, NVDA needs +1.6% from current levels over 9 days with strong bull momentum in play. The previous NVDA bull call spread (Sep 4 $217.50/$225) closed profitably with NVDA at $221-222, validating the bullish thesis. Sep 11 expiry gives 9 days for the move to play out."
+    },
+    {
+      "timestamp": "2026-09-02T14:47:22.441176+00:00",
+      "action": "open",
+      "underlying": "NVDA",
+      "buy_symbol": "NVDA260911C00225000",
+      "sell_symbol": "NVDA260911C00232500",
+      "contracts": 5,
+      "limit_price": 2.55,
+      "max_loss_per_contract": 255.0,
+      "rationale": "Adding a second NVDA Sep 11 bull call spread at a higher strike level to capitalize on continued strong momentum. NVDA has surged from $217.75 to $224.10 today (+$6.35) on massive volume \u2014 #6 most active stock with 41M shares. The existing $222.50/$230 spread is now profitable (+$100) but I want to add incremental upside exposure via a higher-strike spread. Buying $225C (delta 0.486) at $4.00, selling $232.50C (delta 0.237) at $1.45 for net debit of $2.55. Breakeven is $227.55 (NVDA needs +$3.45 from current $224.10 level). Max loss $255/contract \u00d7 5 contracts = $1,275 (1.3% of equity). Combined NVDA exposure with existing spread: $4,275 max loss (4.5% of equity) \u2014 well within limits. Using small 5-contract size given NVDA has already moved significantly today, managing risk of chasing an extended name while still participating in the trend."
+    },
+    {
+      "timestamp": "2026-09-02T16:08:57.657953+00:00",
+      "action": "open",
+      "underlying": "GOOGL",
+      "buy_symbol": "GOOGL260911C00340000",
+      "sell_symbol": "GOOGL260911C00350000",
+      "contracts": 5,
+      "limit_price": 3.2,
+      "max_loss_per_contract": 320.0,
+      "rationale": "GOOGL showed a clear catalyst-driven spike at 10:12 AM ET from $337 to $339.56 on 339K shares (massive volume), then has been holding gains and trending higher in the ~$337-339 range. At $337.55, a $340/$350 BCS provides diversification away from NVDA concentration and gives 9 days for the catalyst momentum to push GOOGL above $340. GOOGL is #8 most active by trades (385K) indicating strong interest and liquidity. Net debit of $3.20 leaves 68% upside to max profit, and breakeven at $343.20 (+1.7% from current) is very achievable over 9 days. This diversifies the book with a non-semiconductor, non-NVDA tech name."
+    }
+  ]
+}
