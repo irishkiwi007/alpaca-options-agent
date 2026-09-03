@@ -1,4 +1,3 @@
-cat > add_ask_agent_ui.py << 'ENDOFFILE'
 """
 Adds an "Ask the Agent" section to the dashboard: a text box where the
 person viewing the dashboard can ask a question about the agent's real
@@ -148,5 +147,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-ENDOFFILE
-echo "Written: $(wc -l < add_ask_agent_ui.py) lines"
