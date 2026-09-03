@@ -23,6 +23,9 @@ from execution.mcp_client import AlpacaMCPClient, unwrap_data
 from execution.trade_logger import log_event
 from risk.drawdown_monitor import check_drawdown
 from agent_layer.autonomous_agent import AutonomousTradingAgent
+from agent_layer.performance_reflection import PerformanceReflectionAgent
+
+REFLECTION_EVERY_N_CYCLES = 8  # not precisely tuned -- a starting cadence
 
 STOP_FLAG_PATH = os.path.join(os.path.dirname(__file__), "STOP_AND_FLATTEN")
 
@@ -47,6 +50,8 @@ async def _get_current_equity(config) -> float:
 async def main_loop():
     config = CONFIG
     agent = AutonomousTradingAgent(config)
+    reflection_agent = PerformanceReflectionAgent(config)
+    cycle_count = 0
 
     log_event("autonomous_runner_start", {})
 
@@ -83,6 +88,13 @@ async def main_loop():
         except Exception as e:
             log_event("autonomous_cycle_failed", {"error": str(e)})
             next_check_minutes = 15  # conservative fallback if a cycle errors out
+
+        cycle_count += 1
+        if cycle_count % REFLECTION_EVERY_N_CYCLES == 0:
+            try:
+                reflection_agent.maybe_generate_reflection()
+            except Exception as e:
+                log_event("performance_reflection_trigger_failed", {"error": str(e)})
 
         log_event("sleeping_until_next_cycle", {"minutes": next_check_minutes})
         time.sleep(next_check_minutes * 60)
