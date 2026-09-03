@@ -274,6 +274,17 @@
       "limit_price": -3.5,
       "max_loss_per_contract": 500.0,
       "rationale": "Closing the META 615/625 bull call spread. The previous close order at -$3.75 did not fill because the limit was too aggressive (market was offering ~$3.29-$3.49). META has been fading all day after a peak of $619 at the open, and is now consolidating around $612. The spread was entered at $5.35 debit and is now worth ~$3.49-3.95 in the market. Setting a limit of -$3.50 (net credit to us when closing) \u2014 this is at or slightly better than the current bid/ask crossover and should fill. Taking the loss now is better than holding through more potential downside. The remaining max loss on this position if held to expiry is ~$925 (already largely realized), vs. if META continues lower the remaining position value deteriorates further."
+    },
+    {
+      "timestamp": "2026-09-03T15:15:36.614594+00:00",
+      "action": "open",
+      "underlying": "NVDA",
+      "buy_symbol": "NVDA260911C00227500",
+      "sell_symbol": "NVDA260911C00235000",
+      "contracts": 5,
+      "limit_price": 3.36,
+      "max_loss_per_contract": 336.0,
+      "rationale": "Opening a new NVDA 227.5/235 bull call spread for 5 contracts expiring 9/11. NVDA is at $226.69 and showing signs of stabilizing after a ~$2 intraday fade from $228+ highs. The 227.5C (delta 0.48) costs $3.74 ask; the 235C (bid $0.38) covers part of the cost. Net debit ~$3.36. NVDA needs only a $0.81 bounce to bring the long leg ATM. With 8 days to expiry and NVDA's strong underlying trend from $220 levels, this is a measured bullish play. The existing NVDA positions (222.5/230 and 225/232.5) are profitable; this adds incremental upside exposure at slightly higher strikes, positioned to benefit if NVDA resumes its upward trend toward $230+. Max loss $1,680 total (1.76% of equity), well within risk parameters."
     }
   ]
 }
