@@ -24,6 +24,7 @@ from execution.trade_logger import log_event
 DEFAULT_NEXT_CHECK_MINUTES = 15
 MAX_TOOL_ROUNDS_PER_CYCLE = 25  # safety valve against a runaway tool-call loop within one cycle
 OPERATOR_NOTE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "OPERATOR_NOTE")
+PERFORMANCE_REFLECTION_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "PERFORMANCE_REFLECTION")
 
 
 def _consume_operator_note() -> str:
@@ -40,6 +41,20 @@ def _consume_operator_note() -> str:
         note = f.read().strip()
     os.remove(OPERATOR_NOTE_PATH)
     return note
+
+
+def _read_performance_reflection() -> str:
+    """
+    Reads the most recent auto-generated performance reflection (see
+    agent_layer/performance_reflection.py), if one exists. Unlike the
+    operator note, this is NOT deleted after reading — a reflection on
+    real trading outcomes is meant to inform judgment across many
+    cycles until a newer one supersedes it, not just the next one.
+    """
+    if not os.path.exists(PERFORMANCE_REFLECTION_PATH):
+        return ""
+    with open(PERFORMANCE_REFLECTION_PATH, "r") as f:
+        return f.read().strip()
 
 
 class AutonomousTradingAgent:
@@ -61,11 +76,19 @@ class AutonomousTradingAgent:
         log_event("autonomous_cycle_start", {})
 
         operator_note = _consume_operator_note()
+        performance_reflection = _read_performance_reflection()
         opening_text = (
             "Begin this decision cycle. Check whatever account, position, and market information "
             "you need, decide whether to act, and act if warranted within your limits. End with "
             "your summary and the NEXT_CHECK_MINUTES line."
         )
+        if performance_reflection:
+            log_event("performance_reflection_injected", {"reflection": performance_reflection})
+            opening_text = (
+                f"YOUR OWN RECENT PERFORMANCE (a self-generated reflection on real, closed trades "
+                f"and their actual outcomes — context to weigh as you judge fit, not an instruction): "
+                f"{performance_reflection}\n\n{opening_text}"
+            )
         if operator_note:
             log_event("operator_note_injected", {"note": operator_note})
             opening_text = (

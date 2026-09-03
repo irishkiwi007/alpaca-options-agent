@@ -12,17 +12,22 @@ default auto-detection picks them up with zero configuration. The
 trading agent's own, much heavier dependencies live in
 requirements-agent.txt instead — install that one on the VM, not this one.
 
-Honest limitation: this dashboard only sees what Alpaca's API exposes
-(orders, positions, fills, bars). It does NOT have access to the
-agent's own written reasoning/rationale for a trade — that lives only
-in logs/events.jsonl on the VM, which this hosted app has no connection
-to. The trade detail page shows real market context (a price chart
-around the decision) but does not yet show the agent's own trigger
-reasoning or lessons-learned — that requires syncing the VM's log
-somewhere this app can read, which is a separate, deferred piece of work.
+This dashboard has no live connection to the VM — it only sees what
+Alpaca's API exposes directly (orders, positions, fills, bars). The
+agent's own written rationale for each trade lives in logs/events.jsonl
+on the VM, so it's bridged in indirectly: deploy/sync_reasoning.sh runs
+on the VM (via cron), derives a small logs/reasoning_export.json from
+the local event log, and pushes it to this repo. This app then fetches
+that file over raw.githubusercontent.com and matches it to each trade
+by underlying + leg symbols (see fetch_reasoning_export /
+match_reasoning below). If the VM's sync cron isn't running, or a
+trade is very recent, the detail page degrades gracefully to "no
+reasoning synced yet" rather than erroring.
 """
 import streamlit as st
+import re
 import requests
+import anthropic
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import defaultdict
@@ -63,6 +68,7 @@ st.markdown("""
 API_KEY = st.secrets.get("ALPACA_API_KEY", "")
 SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
 BASE_URL = st.secrets.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 DATA_URL = st.secrets.get("ALPACA_DATA_URL", "https://data.alpaca.markets")
 
 HEADERS = {
@@ -80,6 +86,73 @@ def fetch(base: str, path: str, params: dict = None):
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
+
+
+REASONING_EXPORT_URL = (
+    "https://raw.githubusercontent.com/irishkiwi007/alpaca-options-agent"
+    "/main/logs/reasoning_export.json"
+)
+
+
+@st.cache_data(ttl=300)
+def fetch_reasoning_export():
+    """
+    Pulls the agent's own trade rationale, synced from the VM's local
+    events.jsonl via deploy/sync_reasoning.sh. Cached 5 minutes.
+    Returns [] on any failure — callers treat that as "no reasoning
+    available yet", not an error to surface.
+    """
+    try:
+        resp = requests.get(REASONING_EXPORT_URL, timeout=10)
+        if resp.status_code != 200:
+            return []
+        return resp.json().get("records", [])
+    except Exception:
+        return []
+
+
+def render_rationale_text(text: str) -> str:
+    """
+    Two fixes for the agent's rationale text, which is written by the
+    LLM as dense run-on prose:
+    1. Escapes literal "$" before markdown rendering — Streamlit's
+       markdown treats a pair of "$" as inline LaTeX/KaTeX math
+       delimiters by default, and this text is full of dollar amounts,
+       so without this, arbitrary spans between dollar signs render as
+       garbled math notation in a different font.
+    2. Splits on sentence boundaries (period + whitespace) and puts
+       each sentence on its own line, dropping the period. Safe
+       against decimals like "$2.01" since a decimal point is never
+       followed by whitespace.
+    """
+    if not text:
+        return "—"
+    text = text.replace("$", "\\$")
+    sentences = re.split(r"\.\s+", text.strip())
+    sentences = [s.rstrip(".").strip() for s in sentences if s.strip()]
+    return "  \n".join(sentences)
+
+
+def match_reasoning(trade: dict, records: list) -> dict:
+    """
+    Matches a built trade record to its open/close reasoning entries.
+    Keyed on underlying + actual leg symbols (not timestamp proximity)
+    since two trades on the same underlying can be open concurrently.
+    """
+    open_symbols = {e["symbol"] for e in trade.get("initial_open_events", [])}
+    close_symbols = {e["symbol"] for e in trade.get("close_events", [])}
+
+    open_reasoning, close_reasoning = None, None
+    for r in records:
+        if r.get("underlying") != trade["underlying"]:
+            continue
+        r_symbols = {r.get("buy_symbol"), r.get("sell_symbol")}
+        if r.get("action") == "open" and open_symbols and r_symbols & open_symbols:
+            open_reasoning = r
+        elif r.get("action") == "close" and close_symbols and r_symbols & close_symbols:
+            close_reasoning = r
+
+    return {"open": open_reasoning, "close": close_reasoning}
 
 
 def parse_underlying(option_symbol: str) -> str:
@@ -622,6 +695,50 @@ if not isinstance(expiry_activities, list):
 
 trades = build_trade_records(all_orders, positions, expiry_activities)
 
+
+def ask_agent_isolated(question: str, account: dict, positions: list, reasoning_records: list) -> str:
+    """
+    Answers a question about the agent's real recent activity, using
+    only data this dashboard already has. No tools are passed to this
+    API call -- there is nothing here that can place, close, or modify
+    a trade, by construction, not by instruction alone.
+    """
+    recent_reasoning = reasoning_records[-15:] if reasoning_records else []
+    reasoning_text = "\n".join(
+        f"[{r.get('timestamp')}] {r.get('action')} {r.get('underlying')}: {r.get('rationale', '')[:300]}"
+        for r in recent_reasoning
+    ) or "No recent reasoning synced yet."
+
+    context = (
+        f"Current account equity: ${account.get('equity', 'unknown')}\n"
+        f"Current open positions: {len(positions)} position(s)\n\n"
+        f"Recent trade reasoning (most recent {len(recent_reasoning)} entries):\n{reasoning_text}"
+    )
+
+    system_prompt = (
+        "You are answering a question from someone viewing your public trading dashboard, "
+        "about your own real recent trading activity. This conversation has no tools to "
+        "place, close, or modify any order or position -- you are architecturally incapable "
+        "of trading right now, so answer honestly and reflectively, not as if you're deciding "
+        "anything. Nothing you say here will be shown to your trading-cycle self or affect "
+        "what you do next cycle. Base your answer only on the real context provided; if you "
+        "don't have enough information to answer confidently, say so rather than guessing. "
+        "Keep it to a few sentences -- this is a dashboard, not a report."
+    )
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        system=system_prompt,
+        messages=[{
+            "role": "user",
+            "content": f"Context on your recent activity:\n\n{context}\n\nQuestion: {question}",
+        }],
+    )
+    return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
+
+
 # =================================================================
 # DETAIL VIEW
 # =================================================================
@@ -662,12 +779,37 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
 
     st.caption(f"Opened: {format_nyc(trade['time_opened'])} NYC" + (f" · Closed: {format_nyc(trade['time_closed'])} NYC" if trade["time_closed"] else " · Still open"))
 
-    st.info(
-        "ℹ️ Trigger reasoning and lessons-learned aren't shown here yet — that text only "
-        "exists in the agent's own log on the deployment VM, which this hosted dashboard "
-        "doesn't have a live connection to. This section shows real market data and actual "
-        "fill details only."
-    )
+    reasoning_records = fetch_reasoning_export()
+    matched = match_reasoning(trade, reasoning_records)
+
+    st.subheader("Agent's Reasoning")
+    if not matched["open"] and not matched["close"]:
+        st.info(
+            "ℹ️ No reasoning synced for this trade yet. The agent's rationale is written on "
+            "the VM and synced to this dashboard periodically — if this trade was opened "
+            "very recently, it may not have synced yet."
+        )
+    else:
+        if matched["open"]:
+            r = matched["open"]
+            with st.container(border=True):
+                st.markdown(f"**Why it opened this trade** · {format_nyc(r['timestamp'])} NYC")
+                st.markdown(render_rationale_text(r.get("rationale")))
+                st.caption(
+                    f"{r.get('contracts')} contract(s) · limit ${r.get('limit_price'):.2f} · "
+                    f"max loss/contract ${r.get('max_loss_per_contract'):.2f}"
+                )
+        if matched["close"]:
+            r = matched["close"]
+            with st.container(border=True):
+                st.markdown(f"**Why it closed this trade** · {format_nyc(r['timestamp'])} NYC")
+                st.markdown(render_rationale_text(r.get("rationale")))
+        if matched["open"] and not matched["close"] and trade["status"] == "closed":
+            st.caption(
+                "No closing rationale synced — this trade may have been closed by expiration "
+                "or the drawdown backstop rather than an agent decision, neither of which log "
+                "a rationale field."
+            )
 
     # ---- Price chart around entry ----
     st.subheader(f"Market Context — {trade['underlying']}")
@@ -700,25 +842,43 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         bar_timeframe = "1Hour"
 
     start = (entry_dt - padding).isoformat()
-    end = (span_end + padding).isoformat()
+    # Never request an end-time in the future — the bars API has no
+    # data there and returns nothing for the *entire* request rather
+    # than just the missing tail, which is why open trades previously
+    # showed no chart at all.
+    requested_end = min(span_end + padding, datetime.now(timezone.utc))
+    end = requested_end.isoformat()
     bars_resp = fetch(DATA_URL, f"/v2/stocks/{trade['underlying']}/bars", {
         "timeframe": bar_timeframe, "start": start, "end": end, "limit": 300,
+        "feed": "iex",  # SIP (the default) isn't authorized for recent/real-time
+                        # data on paper/free accounts and returns nothing for the
+                        # whole request rather than just the recent tail; IEX covers
+                        # the current session without needing a real-time subscription.
     })
     bars = bars_resp.get("bars", []) if isinstance(bars_resp, dict) else []
 
     if bars:
+        def to_nyc_naive(dt_or_iso):
+            if isinstance(dt_or_iso, str):
+                dt = datetime.fromisoformat(dt_or_iso.replace("Z", "+00:00"))
+            else:
+                dt = dt_or_iso
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(NYC_TZ).replace(tzinfo=None).isoformat()
+
         fig = go.Figure(data=[go.Candlestick(
-            x=[b["t"] for b in bars],
+            x=[to_nyc_naive(b["t"]) for b in bars],
             open=[b["o"] for b in bars],
             high=[b["h"] for b in bars],
             low=[b["l"] for b in bars],
             close=[b["c"] for b in bars],
             increasing_line_color="#22D3A8", decreasing_line_color="#EF4444",
         )])
-        fig.add_vline(x=entry_dt.isoformat(), line_dash="dash", line_color="#F59E0B",
+        fig.add_vline(x=to_nyc_naive(entry_dt), line_dash="dash", line_color="#F59E0B",
                        annotation_text="Entry", annotation_font_color="#F59E0B")
         if exit_dt:
-            fig.add_vline(x=exit_dt.isoformat(), line_dash="dash", line_color="#0EA5E9",
+            fig.add_vline(x=to_nyc_naive(exit_dt), line_dash="dash", line_color="#0EA5E9",
                            annotation_text="Exit", annotation_font_color="#0EA5E9")
         fig.update_layout(
             template="plotly_dark",
@@ -740,7 +900,6 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         }
         with st.container(border=True):  # gives the chart a real, visible boundary on the page
             st.plotly_chart(fig, use_container_width=True, config=chart_config)
-        st.caption("Chart is zoom/pan-locked by default so it doesn't interfere with scrolling — use the toolbar above the chart (visible on tap) to zoom or reset the view.")
     else:
         st.info(f"No bar data available for {trade['underlying']} in this window.")
 
@@ -767,7 +926,6 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         st.metric("Entry Total", f"${summary_breakdown['grand_purchase'] * 100:,.2f}")
     with sc5:
         st.metric(f"{price_label} Total", f"${summary_breakdown['grand_current'] * 100:,.2f}" if summary_breakdown["grand_current"] is not None else "—")
-    st.caption("'Current/Last' reflects the most recently quoted price whether the market is open or closed right now — it is not necessarily a live, updating quote outside market hours. Totals include the standard ×100 options multiplier.")
 
     st.divider()
 
@@ -795,7 +953,6 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
             st.metric("Total Current/Exit", f"${breakdown['grand_current'] * 100:,.2f}" if breakdown["grand_current"] is not None else "—")
         with gc3:
             st.metric("Total P/L (all legs)", f"${breakdown['grand_profit'] * 100:,.2f}")
-        st.caption("'$/Ctr' figures are per-contract premium quotes. All totals (here and above) include the standard ×100 options multiplier — real account dollars throughout this page.")
     else:
         st.caption("No leg data available for this trade.")
 
@@ -814,7 +971,7 @@ if st.session_state.view == "detail" and st.session_state.selected_trade_idx is 
         render_leg_table(trade["close_events"], "No closing legs recorded.")
     else:
         st.subheader("Closing trade details")
-        st.caption("Still open — no closing legs yet.")
+        st.caption("Still open")
 
     st.stop()
 
@@ -944,7 +1101,6 @@ if open_trades_indexed:
             "Status": t["status"],
             "Outcome": f"${t['outcome']:,.2f}",
         })
-    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, live and updating.")
 
     event = st.dataframe(
         rows, use_container_width=True, hide_index=True,
@@ -974,7 +1130,6 @@ st.divider()
 # with status='open' the moment it was placed, before it had any
 # actual outcome yet.
 st.subheader("Trade History")
-st.caption("Completed trades only — click a row, then use the button below to open its detail page with a price chart. Still-open positions are in Open Positions, above.")
 
 closed_trades_indexed = [(i, t) for i, t in enumerate(trades) if t["status"] == "closed"]
 
@@ -1000,7 +1155,6 @@ if closed_trades_indexed:
             "Time Closed (NYC)": format_nyc(t["time_closed"]) if t["time_closed"] else "—",
             "Profit/Loss": t["profit_loss"] if t["profit_loss"] else "—",
         })
-    st.caption("$/Ctr figures are the per-contract premium quote. Totals include the standard ×100 options multiplier — real account dollars, same as Outcome.")
 
     event = st.dataframe(
         trade_rows, use_container_width=True, hide_index=True,
@@ -1016,6 +1170,33 @@ if closed_trades_indexed:
             go_to_detail(original_idx)
 else:
     st.info("No completed trades yet. Check Open Positions above if something is currently active.")
+
+st.divider()
+
+st.subheader("Ask the Agent")
+st.write("Feel free to ask my AI for information on its trading (note this does not influence its decision making)")
+
+if "qa_history" not in st.session_state:
+    st.session_state.qa_history = []
+
+if not ANTHROPIC_API_KEY:
+    st.info("Q&A isn't configured on this dashboard yet.")
+else:
+    question = st.text_input("Your question", key="qa_question", label_visibility="collapsed",
+                              placeholder="e.g. Why did you hold NVDA overnight instead of taking profit?")
+    if st.button("Ask", type="primary") and question.strip():
+        with st.spinner("Thinking..."):
+            try:
+                reasoning_records = fetch_reasoning_export()
+                answer = ask_agent_isolated(question.strip(), account, positions, reasoning_records)
+                st.session_state.qa_history.insert(0, {"q": question.strip(), "a": answer})
+            except Exception as e:
+                st.error(f"Couldn't get an answer right now: {e}")
+
+    for pair in st.session_state.qa_history:
+        with st.container(border=True):
+            st.markdown(f"**Q: {pair['q']}**")
+            st.write(pair["a"])
 
 st.divider()
 
