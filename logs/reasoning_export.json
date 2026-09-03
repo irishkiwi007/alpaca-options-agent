@@ -230,6 +230,28 @@
       "limit_price": 3.2,
       "max_loss_per_contract": 320.0,
       "rationale": "GOOGL showed a clear catalyst-driven spike at 10:12 AM ET from $337 to $339.56 on 339K shares (massive volume), then has been holding gains and trending higher in the ~$337-339 range. At $337.55, a $340/$350 BCS provides diversification away from NVDA concentration and gives 9 days for the catalyst momentum to push GOOGL above $340. GOOGL is #8 most active by trades (385K) indicating strong interest and liquidity. Net debit of $3.20 leaves 68% upside to max profit, and breakeven at $343.20 (+1.7% from current) is very achievable over 9 days. This diversifies the book with a non-semiconductor, non-NVDA tech name."
+    },
+    {
+      "timestamp": "2026-09-03T13:37:15.746729+00:00",
+      "action": "close",
+      "underlying": "QQQ",
+      "buy_symbol": "QQQ260903C00720000",
+      "sell_symbol": "QQQ260903C00712000",
+      "contracts": 10,
+      "limit_price": -1.09,
+      "max_loss_per_contract": 800.0,
+      "rationale": "Closing today-expiring QQQ 712/720 call spread. QQQ is at ~$710, below the 712 long strike. The 712 calls still have $1.12 of value while the 720 short calls are nearly worthless at $0.03. Closing now captures ~$1,090 net remaining value rather than risking both legs expiring worthless if QQQ stays below 712 through close. This is a defensive close to salvage remaining value from a losing position."
+    },
+    {
+      "timestamp": "2026-09-03T13:39:14.756378+00:00",
+      "action": "open",
+      "underlying": "META",
+      "buy_symbol": "META260911C00615000",
+      "sell_symbol": "META260911C00625000",
+      "contracts": 5,
+      "limit_price": 5.5,
+      "max_loss_per_contract": 550.0,
+      "rationale": "META bull call spread 615/625 for 9/11 expiration. META is at ~$617.50, up strongly today with broad tech bullishness (NVDA, GOOGL, QQQ all up). Buying the 615C (delta 0.569, ATM) and selling the 625C (delta 0.451) for a net debit of ~$5.50. Breakeven at $620.50, with $10 spread width giving max gain of $4.50. The tight bid/ask spreads ($0.75 wide on the 615C, $0.70 wide on the 625C) confirm good liquidity. 8 days to expiry gives enough time for META to consolidate or continue higher. Max loss per contract $550, total risk 5 contracts = $2,750 (2.9% of equity). This diversifies beyond NVDA and GOOGL into another large-cap tech name showing bullish momentum."
     }
   ]
 }
