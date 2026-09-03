@@ -252,6 +252,17 @@
       "limit_price": 5.5,
       "max_loss_per_contract": 550.0,
       "rationale": "META bull call spread 615/625 for 9/11 expiration. META is at ~$617.50, up strongly today with broad tech bullishness (NVDA, GOOGL, QQQ all up). Buying the 615C (delta 0.569, ATM) and selling the 625C (delta 0.451) for a net debit of ~$5.50. Breakeven at $620.50, with $10 spread width giving max gain of $4.50. The tight bid/ask spreads ($0.75 wide on the 615C, $0.70 wide on the 625C) confirm good liquidity. 8 days to expiry gives enough time for META to consolidate or continue higher. Max loss per contract $550, total risk 5 contracts = $2,750 (2.9% of equity). This diversifies beyond NVDA and GOOGL into another large-cap tech name showing bullish momentum."
+    },
+    {
+      "timestamp": "2026-09-03T14:25:20.827096+00:00",
+      "action": "close",
+      "underlying": "META",
+      "buy_symbol": "META260911C00625000",
+      "sell_symbol": "META260911C00615000",
+      "contracts": 5,
+      "limit_price": -3.75,
+      "max_loss_per_contract": 535.0,
+      "rationale": "Closing the META 615/625 bull call spread. META has been in a clear downtrend since peaking at $618.88 shortly after open, now at $611 and falling. The spread's long leg (615C) is now OTM with META at $611. Current spread value is approximately $3.75 (615C bid $10.75 minus 625C ask $7.62 = $3.13, or more conservatively $11.13 - $7.38 mid = $3.75). Entered at a net debit of $5.35; closing now for ~$3.75 limits the loss to ~$800 vs risking the full $2,675 max loss if META continues declining toward yesterday's close of $600. Closing to protect capital and avoid a larger loss as the intraday trend is clearly negative."
     }
   ]
 }
