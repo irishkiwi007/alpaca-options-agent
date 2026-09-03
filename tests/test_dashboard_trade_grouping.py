@@ -358,7 +358,17 @@ def test_concurrent_different_strikes_same_expiry_stay_separate():
             {"symbol": "QQQ260903C00715000", "position_intent": "sell_to_open", "qty": "8", "filled_avg_price": "1.09"},
             {"symbol": "QQQ260903C00707000", "position_intent": "buy_to_open", "qty": "8", "filled_avg_price": "4.26"}]},
     ]
-    trades = build_trade_records(orders, [], [])
+    # live_positions must reflect the two genuinely still-open trades'
+    # legs, so this test stays valid regardless of real-world date drift
+    # (the vanished-at-expiry fallback correctly treats an unlisted,
+    # past-expiry position as closed -- these ARE listed, so they don't).
+    live_positions = [
+        {"symbol": "QQQ260903C00716000", "unrealized_pl": "0"},
+        {"symbol": "QQQ260903C00709000", "unrealized_pl": "0"},
+        {"symbol": "QQQ260903C00720000", "unrealized_pl": "0"},
+        {"symbol": "QQQ260903C00712000", "unrealized_pl": "0"},
+    ]
+    trades = build_trade_records(orders, live_positions, [])
     assert len(trades) == 3, f"Expected 3 distinct trades, got {len(trades)}"
 
     closed = [t for t in trades if t["status"] == "closed"]
