@@ -59,6 +59,7 @@ async def test_action_open_produces_to_open_intents(monkeypatch):
         "limit_price": 1.76,
         "max_loss_per_contract": 176.0,
         "rationale": "test open",
+        "setup_type": "momentum_breakout",
     })
 
     place_calls = [c for c in FakeMCPClient.calls if c[0] == "place_option_order"]

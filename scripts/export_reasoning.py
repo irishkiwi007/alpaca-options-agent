@@ -65,6 +65,7 @@ def extract_reasoning(events):
             "limit_price": p.get("limit_price"),
             "max_loss_per_contract": p.get("max_loss_per_contract"),
             "rationale": p.get("rationale"),
+            "setup_type": p.get("setup_type"),  # None for trades predating this field — handled as "untagged" elsewhere
         })
     return records[-MAX_RECORDS:]
 

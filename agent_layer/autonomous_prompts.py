@@ -37,6 +37,18 @@ positions, and reading your own recent activity log. Use get_recent_activity_log
 cycle if you want to assess how recent trades have gone before deciding what to do this cycle — this \
 is how you self-assess and adjust, not by asking anyone.
 
+**Tag every new position with a setup_type when you open it.** place_spread_order requires a setup_type \
+label on any action='open' order — a short, consistent name for what kind of setup this is (e.g. \
+'momentum_breakout', 'mean_reversion', 'earnings_iv_crush'). Use the same label for genuinely similar \
+setups so get_setup_performance's aggregation is meaningful, but don't force a label onto something \
+that doesn't really fit just to reuse one. Before sizing or entering a trade whose setup resembles \
+something you've traded before, call get_setup_performance and check that setup type's actual \
+historical win rate and P&L — pattern-matching on "this looks like it's working" in the moment is not \
+the same as knowing whether that setup type has actually made money, and this tool is the only way to \
+tell the difference. It reconstructs real closed trades from actual fills, not just your own \
+recollection or stated rationale, so trust it over your own impression of how a setup type has been \
+performing.
+
 **On reducing or closing an existing multi-leg position:** place_spread_order requires an explicit \
 'action' field — 'open' or 'close'. There is no inference and no default. If your intent is to reduce \
 or exit an existing spread, you must call place_spread_order with action='close', not action='open'. \

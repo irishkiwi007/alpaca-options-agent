@@ -12,6 +12,16 @@ import ast
 
 
 def _load_functions():
+    """
+    group_key, root_symbol_from_group, and build_trade_records now live
+    in execution/trade_records.py (shared with the agent's own
+    get_setup_performance tool) and are imported into streamlit_app.py
+    rather than defined there, so they're imported directly. format_nyc
+    is still dashboard-only, so it's still extracted from
+    streamlit_app.py's AST as before.
+    """
+    from execution.trade_records import build_trade_records  # noqa: F401 (re-exported below)
+
     with open(os.path.join(os.path.dirname(__file__), "..", "streamlit_app.py")) as f:
         source = f.read()
     tree = ast.parse(source)
@@ -23,11 +33,9 @@ def _load_functions():
     namespace["timezone"] = timezone
     namespace["NYC_TZ"] = ZoneInfo("America/New_York")
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in (
-            "group_key", "root_symbol_from_group", "format_nyc", "build_trade_records"
-        ):
+        if isinstance(node, ast.FunctionDef) and node.name == "format_nyc":
             exec(ast.get_source_segment(source, node), namespace)
-    return namespace["format_nyc"], namespace["build_trade_records"]
+    return namespace["format_nyc"], build_trade_records
 
 
 format_nyc, build_trade_records = _load_functions()
@@ -244,18 +252,7 @@ def test_no_orders_returns_empty():
     assert build_trade_records([], []) == []
 
 
-def _load_parse_occ():
-    with open(os.path.join(os.path.dirname(__file__), "..", "streamlit_app.py")) as f:
-        source = f.read()
-    tree = ast.parse(source)
-    namespace = {}
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "parse_occ_symbol":
-            exec(ast.get_source_segment(source, node), namespace)
-    return namespace["parse_occ_symbol"]
-
-
-parse_occ_symbol = _load_parse_occ()
+from execution.trade_records import parse_occ_symbol
 
 
 def test_parse_occ_symbol_real_call():
@@ -278,12 +275,17 @@ def test_parse_occ_symbol_handles_garbage_input():
 
 
 def _load_leg_breakdown():
+    """compute_leg_breakdown is still dashboard-local (not extracted to
+    execution/trade_records.py), so it's still pulled from
+    streamlit_app.py's AST — but it now needs parse_occ_symbol supplied
+    into its exec namespace directly, since that's an import rather
+    than a local def in the source it's being extracted from."""
     with open(os.path.join(os.path.dirname(__file__), "..", "streamlit_app.py")) as f:
         source = f.read()
     tree = ast.parse(source)
-    namespace = {"defaultdict": __import__("collections").defaultdict}
+    namespace = {"defaultdict": __import__("collections").defaultdict, "parse_occ_symbol": parse_occ_symbol}
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in ("parse_occ_symbol", "compute_leg_breakdown"):
+        if isinstance(node, ast.FunctionDef) and node.name == "compute_leg_breakdown":
             exec(ast.get_source_segment(source, node), namespace)
     return namespace["compute_leg_breakdown"]
 

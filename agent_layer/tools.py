@@ -90,6 +90,18 @@ TOOL_SCHEMAS = [
                 "limit_price": {"type": "number", "description": "Net limit price for the spread; negative for net credit, positive for net debit"},
                 "max_loss_per_contract": {"type": "number", "description": "Your calculated worst-case loss for ONE contract of this spread, in dollars (e.g. spread width minus credit, times 100). For a close order, use the remaining max loss on the position being closed."},
                 "rationale": {"type": "string", "description": "Your reasoning for this specific order, including why action is open vs close"},
+                "setup_type": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED when action='open' (ignored/optional for action='close'). Your own "
+                        "short label for what kind of setup this is, e.g. 'momentum_breakout', "
+                        "'mean_reversion', 'earnings_iv_crush', 'macro_hedge'. This is not a fixed "
+                        "enum — use a consistent label for genuinely similar setups so your own "
+                        "historical performance by setup type (get_setup_performance) is meaningful, "
+                        "but don't force a label that doesn't fit just to reuse one. This is how you "
+                        "build a real track record instead of only your in-the-moment confidence."
+                    ),
+                },
             },
             "required": ["action", "underlying", "buy_symbol", "sell_symbol", "contracts", "limit_price", "max_loss_per_contract", "rationale"],
         },
@@ -164,6 +176,26 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_setup_performance",
+        "description": (
+            "Your actual historical win rate and P&L, grouped by the setup_type label you gave each "
+            "trade at entry (via place_spread_order). Use this BEFORE sizing or entering a trade whose "
+            "setup resembles one you've traded before — pattern-matching on 'this looks like it's "
+            "working' in the moment is not the same as knowing whether that setup type has actually "
+            "made or lost money historically, and this is the only way to tell the difference. Reconstructs "
+            "real round-trip trades from actual fills and expirations (not just your own stated rationale), "
+            "so this reflects what really happened, including trades you may not remember clearly. Trades "
+            "placed before setup_type tagging existed, or where the tag is missing, are reported separately "
+            "as 'untagged' rather than silently dropped or guessed at."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "min_trades": {"type": "integer", "description": "Only include setup types with at least this many CLOSED trades in the summary (still-thin setups are noisy). Default 1 (show everything)."},
+            },
+        },
+    },
+    {
         "name": "report_tooling_issue",
         "description": (
             "Report a suspected bug or unexpected behavior in one of YOUR OWN tools — not a market "
@@ -223,6 +255,8 @@ class ToolDispatcher:
                 return await self._close_all_positions()
             elif tool_name == "get_recent_activity_log":
                 return self._get_recent_activity_log(tool_input.get("limit", 100))
+            elif tool_name == "get_setup_performance":
+                return await self._get_setup_performance(tool_input.get("min_trades", 1))
             elif tool_name == "report_tooling_issue":
                 return self._report_tooling_issue(tool_input)
             else:
@@ -346,6 +380,15 @@ class ToolDispatcher:
         limit_price = float(tool_input["limit_price"])
         max_loss_per_contract = float(tool_input["max_loss_per_contract"])
         rationale = tool_input["rationale"]
+        setup_type = (tool_input.get("setup_type") or "").strip()
+
+        # setup_type is required on open (not a hard risk backstop — it's a
+        # data-quality gate for get_setup_performance, rejected the same way
+        # so an untagged trade never silently breaks the win-rate-by-setup
+        # picture rather than failing loudly at the point it would happen.
+        if action == "open" and not setup_type:
+            log_event("backstop_rejected", {"backstop": "missing_setup_type", "reason": "setup_type is required when action='open'.", "input": tool_input})
+            return json.dumps({"rejected": True, "backstop": "missing_setup_type", "reason": "setup_type is required when action='open' — see get_setup_performance for why this matters."})
 
         # --- Hard backstop 1: defined risk only ---
         risk_check = check_defined_risk(sell_symbol, buy_symbol, short_side="sell", long_side="buy")
@@ -390,6 +433,7 @@ class ToolDispatcher:
             "limit_price": limit_price,
             "max_loss_per_contract": max_loss_per_contract,
             "rationale": rationale,
+            "setup_type": setup_type,
         })
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("place_option_order", {
@@ -419,6 +463,124 @@ class ToolDispatcher:
         from execution.trade_logger import read_events
         events = read_events(limit=limit)
         return json.dumps(events)
+
+    def _setup_type_map(self) -> dict:
+        """
+        Reads the FULL event log (not just the recent tail used by
+        get_recent_activity_log) for every agent_order_submit event with
+        action='open', and returns {frozenset({buy_symbol, sell_symbol}):
+        setup_type}. Keyed on the exact traded symbol pair rather than
+        underlying+time, since that's the only thing guaranteed to match
+        build_trade_records' initial_open_events unambiguously — two
+        different trades on the same underlying can open minutes apart.
+        Trades placed before setup_type existed, or with a blank tag,
+        simply won't appear in this map — callers treat that as
+        'untagged', not an error.
+        """
+        import json as _json
+        import os as _os
+        from execution.trade_logger import LOG_PATH
+
+        mapping = {}
+        if not _os.path.exists(LOG_PATH):
+            return mapping
+        with open(LOG_PATH, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("event_type") != "agent_order_submit":
+                    continue
+                payload = entry.get("payload", {})
+                if payload.get("action") != "open":
+                    continue
+                setup_type = (payload.get("setup_type") or "").strip()
+                if not setup_type:
+                    continue
+                buy_symbol = payload.get("buy_symbol")
+                sell_symbol = payload.get("sell_symbol")
+                if not buy_symbol or not sell_symbol:
+                    continue
+                mapping[frozenset({buy_symbol, sell_symbol})] = setup_type
+        return mapping
+
+    async def _get_setup_performance(self, min_trades: int) -> str:
+        from collections import defaultdict
+        from execution.trade_records import build_trade_records
+
+        async with AlpacaMCPClient(self.config) as mcp:
+            orders_result = await mcp.call_tool("get_orders", {"status": "all", "limit": 500})
+            positions_result = await mcp.call_tool("get_positions", {})
+            activities_result = await mcp.call_tool("get_account_activities", {"activity_types": "OPEXP"})
+
+        orders = unwrap_data(orders_result)
+        if isinstance(orders, dict):
+            orders = orders.get("orders", orders.get("data", []))
+        positions = unwrap_data(positions_result)
+        if isinstance(positions, dict):
+            positions = positions.get("positions", positions.get("data", []))
+        expiry_activities = unwrap_data(activities_result)
+        if isinstance(expiry_activities, dict):
+            expiry_activities = expiry_activities.get("activities", expiry_activities.get("data", []))
+
+        trades = build_trade_records(orders or [], positions or [], expiry_activities or [])
+        setup_map = self._setup_type_map()
+
+        stats = defaultdict(lambda: {"closed_trades": 0, "wins": 0, "losses": 0, "flats": 0, "total_pnl": 0.0, "open_trades": 0})
+        for trade in trades:
+            open_symbols = frozenset(e["symbol"] for e in trade.get("initial_open_events", []))
+            setup_type = setup_map.get(open_symbols, "untagged")
+            if trade["status"] == "open":
+                stats[setup_type]["open_trades"] += 1
+                continue
+            s = stats[setup_type]
+            s["closed_trades"] += 1
+            s["total_pnl"] += trade["outcome"]
+            if trade["profit_loss"] == "win":
+                s["wins"] += 1
+            elif trade["profit_loss"] == "loss":
+                s["losses"] += 1
+            else:
+                s["flats"] += 1
+
+        summary = []
+        for setup_type, s in stats.items():
+            if s["closed_trades"] < min_trades:
+                continue
+            win_rate = (s["wins"] / s["closed_trades"]) if s["closed_trades"] else None
+            avg_pnl = (s["total_pnl"] / s["closed_trades"]) if s["closed_trades"] else None
+            summary.append({
+                "setup_type": setup_type,
+                "closed_trades": s["closed_trades"],
+                "open_trades": s["open_trades"],
+                "wins": s["wins"],
+                "losses": s["losses"],
+                "flats": s["flats"],
+                "win_rate": round(win_rate, 3) if win_rate is not None else None,
+                "total_pnl": round(s["total_pnl"], 2),
+                "avg_pnl_per_trade": round(avg_pnl, 2) if avg_pnl is not None else None,
+            })
+        summary.sort(key=lambda x: x["closed_trades"], reverse=True)
+
+        omitted_below_min_trades = [
+            {"setup_type": st, "closed_trades": s["closed_trades"]}
+            for st, s in stats.items() if s["closed_trades"] < min_trades and s["closed_trades"] > 0
+        ]
+
+        return json.dumps({
+            "by_setup_type": summary,
+            "omitted_below_min_trades": omitted_below_min_trades,
+            "note": (
+                "'untagged' covers trades placed before setup_type existed or with a missing tag — "
+                "it is not itself a real setup type, so don't draw conclusions about a specific "
+                "strategy from its numbers. Every new open now requires a setup_type, so this bucket "
+                "should stop growing going forward."
+            ),
+        })
 
     def _report_tooling_issue(self, tool_input: dict) -> str:
         """
