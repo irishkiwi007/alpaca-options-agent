@@ -218,6 +218,40 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_order_fill_status",
+        "description": (
+            "Check the ACTUAL current status and fill price of one or more orders you've placed, by "
+            "order id (returned in place_spread_order's response). You reason about mid-prices and "
+            "limit prices at the moment you submit an order, but you don't automatically learn what "
+            "actually happened after that — whether it filled, at what real price, or whether it's "
+            "still sitting open. Use this later in the same cycle or in a future cycle to check on any "
+            "order you're uncertain about, rather than assuming a limit order filled at your limit "
+            "price just because you didn't hear otherwise. Also useful for reconciling your own "
+            "assumed P&L against what actually got filled."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "order_ids": {"type": "array", "items": {"type": "string"}, "description": "One or more Alpaca order ids to check, e.g. from a previous place_spread_order response."},
+            },
+            "required": ["order_ids"],
+        },
+    },
+    {
+        "name": "get_market_context",
+        "description": (
+            "Current VIX and S&P 500 index levels, with a plain-language volatility-regime label "
+            "(low/normal/elevated/high) so you don't have to interpret the raw VIX number yourself "
+            "every time. Use this to sanity-check whether the broad market backdrop supports the kind "
+            "of setup you're considering — e.g. a low-VIX regime behaves very differently from an "
+            "elevated one for the same nominal strategy. This does NOT cover scheduled macro events "
+            "(Fed meetings, CPI/jobs releases) or news headlines — it's index levels only, not an "
+            "economic calendar or news feed; don't infer the presence or absence of a scheduled event "
+            "from this tool."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "report_tooling_issue",
         "description": (
             "Report a suspected bug or unexpected behavior in one of YOUR OWN tools — not a market "
@@ -281,6 +315,10 @@ class ToolDispatcher:
                 return await self._get_setup_performance(tool_input.get("min_trades", 1))
             elif tool_name == "get_portfolio_greeks":
                 return await self._get_portfolio_greeks(tool_input.get("concentration_threshold", 0.4))
+            elif tool_name == "get_order_fill_status":
+                return await self._get_order_fill_status(tool_input["order_ids"])
+            elif tool_name == "get_market_context":
+                return await self._get_market_context()
             elif tool_name == "report_tooling_issue":
                 return self._report_tooling_issue(tool_input)
             else:
@@ -448,6 +486,32 @@ class ToolDispatcher:
             {"symbol": sell_symbol, "side": "sell", "ratio_qty": "1", "position_intent": f"sell_to_{intent_suffix}"},
             {"symbol": buy_symbol, "side": "buy", "ratio_qty": "1", "position_intent": f"buy_to_{intent_suffix}"},
         ]
+
+        # NBBO snapshot at the moment of submission — logged AND returned
+        # immediately, not something the agent has to ask for separately.
+        # Real gap this closes: after a close attempt on META at -$3.75
+        # didn't fill, the agent had to guess afterward what the market
+        # was actually offering ("I had to guess the market was offering
+        # $3.29-3.49"). Recording the actual NBBO at the exact moment the
+        # limit price was chosen means that guess is never necessary again
+        # — a non-fill can be explained by comparing the limit to what the
+        # market genuinely was, not reconstructed after the fact. Best-effort:
+        # if the snapshot call itself fails, the order still proceeds rather
+        # than being blocked by a data-quality nicety.
+        nbbo_at_submission = {}
+        try:
+            async with AlpacaMCPClient(self.config) as mcp:
+                snap_result = await mcp.call_tool("get_option_snapshot", {"symbols": f"{buy_symbol},{sell_symbol}"})
+            snaps = unwrap_data(snap_result) or {}
+            if isinstance(snaps, dict) and "data" in snaps and set(snaps.keys()) <= {"data", "next_page_token"}:
+                snaps = snaps["data"]
+            for sym in (buy_symbol, sell_symbol):
+                q = (snaps.get(sym) or {}).get("latestQuote") or {}
+                if q:
+                    nbbo_at_submission[sym] = {"bid": q.get("bp") or q.get("bid_price"), "ask": q.get("ap") or q.get("ask_price")}
+        except Exception as e:
+            nbbo_at_submission = {"error": f"NBBO snapshot failed, order proceeding anyway: {e}"}
+
         log_event("agent_order_submit", {
             "action": action,
             "underlying": underlying,
@@ -458,6 +522,7 @@ class ToolDispatcher:
             "max_loss_per_contract": max_loss_per_contract,
             "rationale": rationale,
             "setup_type": setup_type,
+            "nbbo_at_submission": nbbo_at_submission,
         })
         async with AlpacaMCPClient(self.config) as mcp:
             result = await mcp.call_tool("place_option_order", {
@@ -469,7 +534,20 @@ class ToolDispatcher:
                 "limit_price": str(limit_price),
             })
         log_event("agent_order_response", {"result": result})
-        return json.dumps({"rejected": False, "order_result": result})
+        order_data = unwrap_data(result) or {}
+        order_id = order_data.get("id") if isinstance(order_data, dict) else None
+        order_status = order_data.get("status") if isinstance(order_data, dict) else None
+        return json.dumps({
+            "rejected": False,
+            "order_result": result,
+            "nbbo_at_submission": nbbo_at_submission,
+            "note": (
+                f"Order id {order_id} submitted with status '{order_status}'. If it's not yet 'filled', "
+                "this is a day limit order — it may fill later this session or expire unfilled. Use "
+                "get_order_fill_status with this order id later in the cycle or a future cycle to check "
+                "what actually happened, rather than assuming it filled at your limit price."
+            ) if order_id else "Order submitted.",
+        })
 
     async def _close_position(self, symbol: str) -> str:
         log_event("agent_close_position", {"symbol": symbol})
@@ -709,6 +787,89 @@ class ToolDispatcher:
                 "but not used for concentration flagging. A symbol in positions_missing_greeks had no "
                 "Greeks in the snapshot response (e.g. illiquid contract, feed gap) and was excluded "
                 "from totals rather than estimated."
+            ),
+        })
+
+    async def _get_order_fill_status(self, order_ids: list) -> str:
+        results = []
+        async with AlpacaMCPClient(self.config) as mcp:
+            for order_id in order_ids:
+                try:
+                    raw = await mcp.call_tool("get_order_by_id", {"order_id": order_id, "nested": True})
+                    order = unwrap_data(raw) or {}
+                    legs = order.get("legs") or [order]
+                    results.append({
+                        "order_id": order_id,
+                        "status": order.get("status"),
+                        "filled_qty": order.get("filled_qty"),
+                        "filled_avg_price": order.get("filled_avg_price"),
+                        "submitted_at": order.get("submitted_at"),
+                        "filled_at": order.get("filled_at"),
+                        "legs": [
+                            {
+                                "symbol": leg.get("symbol"),
+                                "side": leg.get("side"),
+                                "position_intent": leg.get("position_intent"),
+                                "status": leg.get("status"),
+                                "filled_qty": leg.get("filled_qty"),
+                                "filled_avg_price": leg.get("filled_avg_price"),
+                            }
+                            for leg in legs
+                        ],
+                    })
+                except Exception as e:
+                    results.append({"order_id": order_id, "error": str(e)})
+
+        return json.dumps({
+            "orders": results,
+            "note": (
+                "filled_avg_price here is the REAL fill price from Alpaca, not your assumed mid-price "
+                "or limit price at submission — use it to reconcile actual P&L against what you expected. "
+                "A status other than 'filled' (e.g. 'new', 'accepted', 'canceled', 'expired') means the "
+                "order did not execute as you may be assuming."
+            ),
+        })
+
+    async def _get_market_context(self) -> str:
+        async with AlpacaMCPClient(self.config) as mcp:
+            raw = await mcp.call_tool("get_index_latest_values", {"symbols": "VIX,SPX"})
+        data = unwrap_data(raw) or {}
+        if isinstance(data, dict) and "data" in data and set(data.keys()) <= {"data", "next_page_token"}:
+            data = data["data"]
+
+        def _extract_value(entry):
+            if entry is None:
+                return None
+            if isinstance(entry, (int, float)):
+                return float(entry)
+            if isinstance(entry, dict):
+                for key in ("value", "price", "close", "latestValue"):
+                    if key in entry and entry[key] is not None:
+                        return float(entry[key])
+            return None
+
+        vix = _extract_value(data.get("VIX")) if isinstance(data, dict) else None
+        spx = _extract_value(data.get("SPX")) if isinstance(data, dict) else None
+
+        if vix is None:
+            regime = "unknown"
+        elif vix < 15:
+            regime = "low"
+        elif vix < 20:
+            regime = "normal"
+        elif vix < 30:
+            regime = "elevated"
+        else:
+            regime = "high"
+
+        return json.dumps({
+            "vix": vix,
+            "spx": spx,
+            "vix_regime": regime,
+            "note": (
+                "Index levels only — this does NOT include scheduled macro events (Fed meetings, "
+                "CPI/jobs releases) or news headlines. A missing vix/spx value means the underlying "
+                "get_index_latest_values call returned no data for that symbol, not that the market is closed."
             ),
         })
 

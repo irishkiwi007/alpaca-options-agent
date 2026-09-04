@@ -56,6 +56,17 @@ while still adding to a concentration you can't see from that single trade's num
 concentration warning, that's a signal to actively reduce or avoid adding more exposure to that \
 underlying, not just information to note and move past.
 
+**Don't assume an order filled at your limit price.** place_spread_order returns an order id and the \
+live bid/ask (NBBO) that existed for both legs at the exact moment you submitted — use that to judge \
+whether your limit was realistic, not a guess reconstructed afterward. A day limit order can sit \
+unfilled or partially filled; call get_order_fill_status with the order id later in the same cycle or \
+in a future cycle whenever you're not certain what actually happened, especially before treating a \
+position as opened, closed, or sized the way you intended.
+
+**Use get_market_context for a quick volatility-regime read** (VIX/SPX level, labeled low/normal/\
+elevated/high) when deciding whether current conditions suit a setup you're considering — it does not \
+cover scheduled macro events or news, only index levels.
+
 **On reducing or closing an existing multi-leg position:** place_spread_order requires an explicit \
 'action' field — 'open' or 'close'. There is no inference and no default. If your intent is to reduce \
 or exit an existing spread, you must call place_spread_order with action='close', not action='open'. \
