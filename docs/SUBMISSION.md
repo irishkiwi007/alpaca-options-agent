@@ -34,3 +34,7 @@ Deployed on a persistent cloud VM under systemd (auto-restarting, structured JSO
 ## Status at Submission
 
 Live and trading on the real paper account since 31 Aug 2026, with a mix of real wins and losses across multiple positions — see the live dashboard for current results, including full trade-by-trade detail and the underlying reasoning trail. The codebase carries 117 automated tests, the large majority written directly against real trade data pulled from the live account rather than synthetic examples, after specific bugs were found through actual use.
+
+## Self-Assessed Limitations
+
+Asked directly, through the live app, "what do you need," the agent identified five concrete gaps in its own reasoning. In its own words, the two it flagged as most consequential: no consolidated view of net delta/theta/vega across all open positions simultaneously (called out against a same-day concentration of multiple NVDA spreads that wasn't quantified portfolio-wide), and no structured record of historical win rate by setup type — "I could be systematically overconfident on certain trade types." It also named gaps in realized-vs-assumed fill pricing, visibility into why specific orders didn't fill, and real-time macro/VIX context beyond price action alone. None of these bear on the hard-coded risk gates above, which hold regardless of what the agent knows or doesn't know about its own performance — they're about the quality of its judgment inside those bounds, and the agent surfaced them unprompted.
