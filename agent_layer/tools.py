@@ -196,6 +196,28 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_portfolio_greeks",
+        "description": (
+            "Your net delta, theta, vega, and gamma exposure aggregated ACROSS ALL currently open "
+            "positions — both by underlying and as one portfolio-wide total. You can reason correctly "
+            "about a single spread's own risk and still be blind to concentration building up across "
+            "several trades on the same or correlated underlyings, because nothing else shows you the "
+            "combined picture — this is that picture. Call this before opening a new position in an "
+            "underlying you already hold, and periodically whenever you have multiple open positions, "
+            "not just when something has already gone wrong. Delta/theta/vega/gamma are computed "
+            "per-position as contracts x 100 x the per-share Greek from live option snapshots, signed "
+            "for long vs short, then summed — a genuine portfolio aggregate, not a per-trade estimate. "
+            "Flags any single underlying responsible for an outsized share of total portfolio delta so "
+            "concentration is visible without you having to compute it yourself."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "concentration_threshold": {"type": "number", "description": "Flag an underlying if its share of total absolute portfolio delta exceeds this fraction (0-1). Default 0.4 (40%)."},
+            },
+        },
+    },
+    {
         "name": "report_tooling_issue",
         "description": (
             "Report a suspected bug or unexpected behavior in one of YOUR OWN tools — not a market "
@@ -257,6 +279,8 @@ class ToolDispatcher:
                 return self._get_recent_activity_log(tool_input.get("limit", 100))
             elif tool_name == "get_setup_performance":
                 return await self._get_setup_performance(tool_input.get("min_trades", 1))
+            elif tool_name == "get_portfolio_greeks":
+                return await self._get_portfolio_greeks(tool_input.get("concentration_threshold", 0.4))
             elif tool_name == "report_tooling_issue":
                 return self._report_tooling_issue(tool_input)
             else:
@@ -579,6 +603,112 @@ class ToolDispatcher:
                 "it is not itself a real setup type, so don't draw conclusions about a specific "
                 "strategy from its numbers. Every new open now requires a setup_type, so this bucket "
                 "should stop growing going forward."
+            ),
+        })
+
+    async def _get_portfolio_greeks(self, concentration_threshold: float) -> str:
+        from collections import defaultdict
+        from execution.trade_records import parse_occ_symbol, parse_underlying
+
+        async with AlpacaMCPClient(self.config) as mcp:
+            positions_result = await mcp.call_tool("get_positions", {})
+
+        positions = unwrap_data(positions_result)
+        if isinstance(positions, dict):
+            positions = positions.get("positions", positions.get("data", []))
+        positions = positions or []
+
+        # Only OCC option symbols carry Greeks — a bare stock/ETF position
+        # (length < 16 for an OCC symbol) has none and is skipped here
+        # rather than guessed at.
+        option_positions = [p for p in positions if p.get("symbol") and len(p["symbol"]) >= 16]
+
+        if not option_positions:
+            return json.dumps({
+                "positions_included": 0,
+                "by_underlying": [],
+                "portfolio_totals": {"delta": 0.0, "theta": 0.0, "vega": 0.0, "gamma": 0.0},
+                "concentration_warnings": [],
+                "note": "No open option positions to aggregate.",
+            })
+
+        symbols = sorted({p["symbol"] for p in option_positions})
+        async with AlpacaMCPClient(self.config) as mcp:
+            snapshot_result = await mcp.call_tool("get_option_snapshot", {"symbols": ",".join(symbols)})
+        snapshots = unwrap_data(snapshot_result)
+        if isinstance(snapshots, dict) and "data" in snapshots and set(snapshots.keys()) <= {"data", "next_page_token"}:
+            snapshots = snapshots["data"]
+        snapshots = snapshots or {}
+
+        MULTIPLIER = 100
+        by_underlying = defaultdict(lambda: {"delta": 0.0, "theta": 0.0, "vega": 0.0, "gamma": 0.0, "positions": 0})
+        totals = {"delta": 0.0, "theta": 0.0, "vega": 0.0, "gamma": 0.0}
+        missing_greeks = []
+
+        for p in option_positions:
+            symbol = p["symbol"]
+            snap = snapshots.get(symbol) or {}
+            greeks = snap.get("greeks") or {}
+            if not greeks:
+                missing_greeks.append(symbol)
+                continue
+
+            try:
+                qty = abs(float(p.get("qty", 0) or 0))
+            except (TypeError, ValueError):
+                qty = 0.0
+            side = (p.get("side") or "").lower()
+            # Alpaca positions report qty as non-negative with a separate
+            # side field ("long"/"short"); fall back to a negative qty
+            # convention if a caller/mock ever reports it that way instead.
+            is_short = side == "short" or float(p.get("qty", 0) or 0) < 0
+            signed_qty = -qty if is_short else qty
+
+            underlying = parse_underlying(symbol)
+            for greek in ("delta", "theta", "vega", "gamma"):
+                raw = greeks.get(greek)
+                if raw is None:
+                    continue
+                exposure = signed_qty * float(raw) * MULTIPLIER
+                by_underlying[underlying][greek] += exposure
+                totals[greek] += exposure
+            by_underlying[underlying]["positions"] += 1
+
+        total_abs_delta = sum(abs(v["delta"]) for v in by_underlying.values())
+        concentration_warnings = []
+        breakdown = []
+        for underlying, g in by_underlying.items():
+            share_of_delta = (abs(g["delta"]) / total_abs_delta) if total_abs_delta else 0.0
+            breakdown.append({
+                "underlying": underlying,
+                "positions": g["positions"],
+                "delta": round(g["delta"], 2),
+                "theta": round(g["theta"], 2),
+                "vega": round(g["vega"], 2),
+                "gamma": round(g["gamma"], 4),
+                "share_of_portfolio_abs_delta": round(share_of_delta, 3),
+            })
+            if share_of_delta >= concentration_threshold:
+                concentration_warnings.append({
+                    "underlying": underlying,
+                    "share_of_portfolio_abs_delta": round(share_of_delta, 3),
+                    "positions": g["positions"],
+                })
+        breakdown.sort(key=lambda x: abs(x["delta"]), reverse=True)
+        concentration_warnings.sort(key=lambda x: x["share_of_portfolio_abs_delta"], reverse=True)
+
+        return json.dumps({
+            "positions_included": len(option_positions) - len(missing_greeks),
+            "positions_missing_greeks": missing_greeks,
+            "by_underlying": breakdown,
+            "portfolio_totals": {k: round(v, 2) for k, v in totals.items()},
+            "concentration_warnings": concentration_warnings,
+            "note": (
+                "delta/theta/vega are position-signed (long positive, short negative) and summed as "
+                "contracts x 100 x per-share Greek from live snapshots. gamma is reported per underlying "
+                "but not used for concentration flagging. A symbol in positions_missing_greeks had no "
+                "Greeks in the snapshot response (e.g. illiquid contract, feed gap) and was excluded "
+                "from totals rather than estimated."
             ),
         })
 
