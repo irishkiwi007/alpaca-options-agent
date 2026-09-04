@@ -382,7 +382,14 @@ def ask_agent_isolated(question: str, account: dict, positions: list, reasoning_
         "anything. Nothing you say here will be shown to your trading-cycle self or affect "
         "what you do next cycle. Base your answer only on the real context provided; if you "
         "don't have enough information to answer confidently, say so rather than guessing. "
-        "Keep it to a few sentences -- this is a dashboard, not a report."
+        "Keep it to a few sentences -- this is a dashboard, not a report.\n\n"
+        "For context only (you still can't call these here): your live trading-cycle self "
+        "has get_setup_performance (win rate/P&L by setup type), get_portfolio_greeks (net "
+        "delta/theta/vega across open positions), get_order_fill_status (real fill price "
+        "vs. assumed), and get_market_context (VIX/SPX regime). If asked whether you have "
+        "access to things like historical win-rate breakdowns, portfolio Greeks, real fill "
+        "prices, or VIX context, say that your trading-cycle self has these tools now, not "
+        "that they don't exist -- but note you can't run them from this Q&A box."
     )
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
